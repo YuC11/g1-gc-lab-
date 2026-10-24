@@ -73,7 +73,7 @@ REGION_SIZE=4m HEAP=2g ./scripts/run.sh
 -Xlog:gc*=info:file=logs/gc-%t.log:utctime,uptime,level,tags:filecount=10,filesize=20m
 ```
 
-其中 pause target、IHOP、tenuring、string dedup 都是为了让课堂演示更快出现相应现象，**不是 G1 的 JDK 默认值**。默认值见 [02-g1-flags.md](docs/02-g1-flags.md)。
+其中 pause target、IHOP、tenuring、string dedup 都是为了让课堂演示更快出现相应现象，**不是 G1 的 JDK 默认值**。默认值见 [05-参数与调优顺序.md](docs/05-参数与调优顺序.md)。
 
 默认不设置 `G1HeapRegionSize`。Region 大小由公式推导（`run.sh` 启动时按此预告，实际值见 `/api/config`）：
 
@@ -155,7 +155,7 @@ curl -s http://127.0.0.1:8080/api/jfr/status | jq .
 
 ```bash
 # 学习路线（先读文档，再按模块操作）
-open docs/10-g1-learning-path.md
+open docs/08-学习路线.md
 
 # 多 profile 单变量 A/B：保存每个 profile 的日志、响应和统计
 ./scripts/tuning-lab.sh allocation-storm
@@ -175,49 +175,51 @@ A/B 结果写入 `reports/tuning-<timestamp>/`，不会修改 `docs/samples/`。
 
 第一条命令会启动 2G 实例跑完整场景，再启动 4G 实例做对比，并把裁剪后的真实日志写入 `docs/samples/`。完整日志在 `logs/`（已 gitignore）。
 
-## 文档索引（11 篇，按用途分组）
+## 文档索引（11 篇，按学习思路排序）
 
-**上手操作**
+编号即阅读思路：**先动手（01–03）→ 再建模（04–05）→ 后精进（06–07）→ 练实践（08–09）→ 查档案（10–11）**。
 
-| 文档 | 内容 |
-|---|---|
-| [04-scenario-playbook.md](docs/04-scenario-playbook.md) | 场景操作唯一手册：每个场景的参数、预期与观察点 |
-| [08-reproduction-runbook.md](docs/08-reproduction-runbook.md) | 从零复现：环境、构建、启动、4G 对照、验收清单 |
-
-**参考知识**
+**上手操作（先动手）**
 
 | 文档 | 内容 |
 |---|---|
-| [01-g1-internals.md](docs/01-g1-internals.md) | G1 内部机制：第一部分概念模型（Region/RSet/SATB/周期），第二部分全流程与数据结构深潜（TAMS/Bitmap/Mark Stack） |
-| [02-g1-flags.md](docs/02-g1-flags.md) | JDK 21 G1 参数表、堆与 Region 推导公式、调优顺序 |
-| [05-tuning-and-troubleshooting.md](docs/05-tuning-and-troubleshooting.md) | 症状驱动的排障手册 |
-| [06-tools-and-observability.md](docs/06-tools-and-observability.md) | JMX、JFR、jcmd、jstat、actuator |
+| [01-从零复现手册.md](docs/01-从零复现手册.md) | 从零复现：环境、构建、启动、4G 对照、验收清单 |
+| [02-场景操作手册.md](docs/02-场景操作手册.md) | 场景操作唯一手册：每个场景的参数、预期与观察点 |
 
-**证据解读**
+**证据解读（看懂你刚看到的）**
 
 | 文档 | 内容 |
 |---|---|
-| [03-gc-log-analysis.md](docs/03-gc-log-analysis.md) | 第一部分按主题读日志，第二部分样例文件逐份分析 |
+| [03-GC日志解读.md](docs/03-GC日志解读.md) | 第一部分按主题读日志，第二部分样例文件逐份分析 |
 
-**实践路径**
-
-| 文档 | 内容 |
-|---|---|
-| [10-g1-learning-path.md](docs/10-g1-learning-path.md) | 10 个学习模块、7 天安排与自测题 |
-| [11-g1-tuning-workshop.md](docs/11-g1-tuning-workshop.md) | 调优方法论、A/B 实验和工作簿 |
-
-**档案与索引**
+**参考知识（建立模型）**
 
 | 文档 | 内容 |
 |---|---|
-| [00-coverage-matrix.md](docs/00-coverage-matrix.md) | G1 核心知识面覆盖矩阵（知识点 × 项目落点） |
-| [07-implementation-journal.md](docs/07-implementation-journal.md) | 开发档案：实现步骤、实际命令、踩坑与修复记录 |
+| [04-G1内部机制.md](docs/04-G1内部机制.md) | G1 内部机制：第一部分概念模型（Region/RSet/SATB/周期），第二部分全流程与数据结构深潜（TAMS/Bitmap/Mark Stack） |
+| [05-参数与调优顺序.md](docs/05-参数与调优顺序.md) | JDK 21 G1 参数表、堆与 Region 推导公式、调优顺序 |
+| [06-排障手册.md](docs/06-排障手册.md) | 症状驱动的排障手册 |
+| [07-工具链与可观测性.md](docs/07-工具链与可观测性.md) | JMX、JFR、jcmd、jstat、actuator |
+
+**实践路径（练出来）**
+
+| 文档 | 内容 |
+|---|---|
+| [08-学习路线.md](docs/08-学习路线.md) | 10 个学习模块、7 天安排与自测题 |
+| [09-调优工作坊.md](docs/09-调优工作坊.md) | 调优方法论、A/B 实验和工作簿 |
+
+**档案与索引（备查）**
+
+| 文档 | 内容 |
+|---|---|
+| [10-开发档案.md](docs/10-开发档案.md) | 开发档案：实现步骤、实际命令、踩坑与修复记录 |
+| [11-知识覆盖矩阵.md](docs/11-知识覆盖矩阵.md) | G1 核心知识面覆盖矩阵（知识点 × 项目落点） |
 
 阅读路径（三条主线）：
 
-1. **第一次跑**：[08 复现手册](docs/08-reproduction-runbook.md) 起步 → 场景操作查 [04 手册](docs/04-scenario-playbook.md) → 日志看不懂查 [03 日志解读](docs/03-gc-log-analysis.md)。
-2. **系统学习 G1**：[01 内部机制](docs/01-g1-internals.md)（先概念卡后深潜）→ 按 [10 学习路线](docs/10-g1-learning-path.md) 做实验 → 用 [11 调优工作坊](docs/11-g1-tuning-workshop.md) + `scripts/tuning-lab.sh` 练单变量 A/B。
-3. **排查具体问题**：[05 排障手册](docs/05-tuning-and-troubleshooting.md) 按症状定位 → 工具细节查 [06 工具链](docs/06-tools-and-observability.md)。
+1. **第一次跑**：[01 从零复现](docs/01-从零复现手册.md) → 场景操作查 [02 场景手册](docs/02-场景操作手册.md) → 日志看不懂查 [03 日志解读](docs/03-GC日志解读.md)。
+2. **系统学习 G1**：[04 内部机制](docs/04-G1内部机制.md)（先概念卡后深潜）→ 按 [08 学习路线](docs/08-学习路线.md) 做实验 → 用 [09 调优工作坊](docs/09-调优工作坊.md) + `scripts/tuning-lab.sh` 练单变量 A/B。
+3. **排查具体问题**：[06 排障手册](docs/06-排障手册.md) 按症状定位 → 工具细节查 [07 工具链](docs/07-工具链与可观测性.md)。
 
 ## 项目结构
 
