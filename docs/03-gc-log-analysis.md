@@ -1,11 +1,16 @@
-# GC 日志案例分析（JDK 21）
+# GC 日志解读：从一行日志到一份证据（JDK 21）
 
-本文所有示例都来自本项目在 **JDK 21.0.11** 上生成的日志。完整样例在：
+本文分两部分：
+
+- **第一部分（按主题）**：怎么读日志——格式与字段含义是重点，数字会随机器、堆、负载变化；
+- **第二部分（按文件）**：`docs/samples/` 中真实样例的逐份分析记录，所有统计可用文末命令复现。
+
+所有示例都来自本项目在 **JDK 21.0.11** 上的真实运行：
 
 - [samples/gc-scenarios-2g.log](samples/gc-scenarios-2g.log)：2G、1M Region、全部场景、verbose
 - [samples/gc-scenarios-4g.log](samples/gc-scenarios-4g.log)：4G、2M Region、Young/Humongous/Full 对照
 
-日志中的数字会随机器、堆、负载变化；**格式和字段含义**才是重点。逐文件的最新统计见 [09-gc-log-file-analysis.md](09-gc-log-file-analysis.md)。
+## 第一部分：按主题读日志
 
 ## 1. 一行日志怎么读
 
@@ -36,6 +41,7 @@
 - 这条汇总行不是 start 行。`gc,start` 行只有 `Pause ...`，没有 `before->after` 和毫秒数；解析器只取汇总行，避免重复。
 - 单行数字单位可能是 K/M/G，解析器都支持。
 - 并发阶段行没有 `Pause`，它们是应用线程与 GC 线程并行执行的，不计入 STW pause。
+- **一个 GC 块的行序与直觉相反**：JDK 21 中 pause 汇总行出现在块的**末尾**（先是 start/worker/phases/region/Metaspace 行，最后才是汇总行与 `gc,cpu` 行），详见第 14 节。
 
 ## 2. 启动 ergonomics：2G 与 4G
 
@@ -60,7 +66,7 @@
 
 - G1 自动把 Region 维持在约 2048 个：2G/2048=1M，4G/2048=2M。
 - 4G 的 Humongous 阈值从约 512KB 变为约 1MB。
-- 这不是“Region 越大越先进”，而是堆规模/管理粒度的折中。
+- 这不是"Region 越大越先进"，而是堆规模/管理粒度的折中。
 - 可通过 `/api/config` 或 `jcmd <pid> VM.flags` 验证。
 
 ## 3. 普通 Young GC
@@ -90,7 +96,7 @@ GC(6) Humongous regions: 0->0
 
 - EDEN `195->0`：Eden Region 被清空。
 - Survivor `9->4`、Old `8->16`：存活对象部分留在 Survivor，部分晋升到 Old。
-- `(221)` 是本次统计中 Eden 可用的 Region 数上限/相关容量，具体取决于 G1 内部记录方式；不要把括号简单理解为“之前有 221 个”。
+- `(221)` 是本次统计中 Eden 可用的 Region 数上限/相关容量，具体取决于 G1 内部记录方式；不要把括号简单理解为"之前有 221 个"。
 - Humongous 为 0，说明这次回收没有 H 对象。
 
 ## 4. 暂停阶段：时间花在哪里
@@ -171,7 +177,7 @@ GC(20) Pause Young (Mixed) (G1 Evacuation Pause) 1680M->988M(2048M) 4.147ms
 - `Mixed` 表示 CSet 里包含 Old Region，不只是年轻代。
 - 不是所有 Old Region 都会被回收，只选择低存活率、收益足够的部分。
 - 日志里出现 `Pause Young (Mixed)` 是 Mixed 真正发生的证据；只有 `Concurrent Start` 不代表已经完成 Mixed。
-- 如果日志显示 `do not continue mixed GCs (candidate old regions not available)`，说明没有更多合适的 Old CSet 了。
+- 如果日志显示 `do not continue mixed GCs (candidate old regions not available)`，说明没有更多合适的 Old CSet 了（该行也会进入事件的 `details.ergo` 字段）。
 
 ### 5.5 CSet 选择
 
@@ -185,7 +191,7 @@ GC(26) Finish adding marking candidates to collection set. Initial: 2, optional:
 
 - `Initial` 是必须回收的 Region，`optional` 是按收益追加的 Region。
 - `marking candidates exhausted` 表示可选候选已经用完。
-- 这能解释“为什么 Mixed 只回收了几个 Region”：不是每次都能凑满 CSet。
+- 这能解释"为什么 Mixed 只回收了几个 Region"：不是每次都能凑满 CSet。
 
 ## 6. Humongous 对象
 
@@ -210,7 +216,7 @@ GC(20) Humongous regions: 49->1
 - `32->0`：引用释放后，H Region 被回收。
 - H 对象分配会直接占用 Old/H 区域，容易造成碎片。
 - 2G/1M Region 与 4G/2M Region 的 H 数量不同，因为同一对象占用的 Region 数不同。
-- 对象的数组头也计入大小，所以“刚好半 Region”的 byte[] 也可能是 H 对象。项目普通场景使用 256KB chunk 来规避这个问题。
+- 对象的数组头也计入大小，所以"刚好半 Region"的 byte[] 也可能是 H 对象。项目普通场景使用 256KB chunk 来规避这个问题。
 
 ## 7. 显式 Full GC
 
@@ -245,7 +251,7 @@ GC(31) Phase 4: Compact heap 0.798ms
 独立日志：
 
 ```text
-[2026-10-19T02:29:09.375+0000][17.580s][info][class,unload] unloading class DynamicClasses$C499 0x0000007801710a50
+[2026-10-19T02:29:09.375+0000][17.580s][info][class,unload] unloading class DynamicClasses$C499 0x0000007801710a40
 [2026-10-19T02:29:09.375+0000][17.580s][info][class,unload] unloading class DynamicClasses$C498 ...
 ```
 
@@ -260,6 +266,7 @@ Metaspace 41.5 MB -> 51.3 MB -> 50.5 MB
 - 动态类加载让 Metaspace 上升约 10MB。
 - 丢弃 ClassLoader 并 Full GC 后，`class,unload` 行出现。
 - Metaspace 只回落约 0.8MB，是因为类元数据并非全部可立即归还给操作系统，且 Metaspace 的 committed 不会立刻缩小；**看 class unload 行比只看 Metaspace 数字更可靠**。
+- 控制台无需手工数行：`class-unload` 场景响应的 `metrics.unloadedClasses` 就是本轮实际卸载数（侧日志实时解析）。
 - 如果完全没有 unloading 行，优先排查 ClassLoader 是否仍然可达。
 
 ## 9. String Deduplication
@@ -278,6 +285,7 @@ Metaspace 41.5 MB -> 51.3 MB -> 50.5 MB
 - `17.316ms of 17.698ms`：去重线程实际处理时间 / 总持续时间。
 - 去重发生在并发阶段，不是 STW；但对 CPU 有成本。
 - 本项目默认使用 `-XX:+UseStringDeduplication -XX:StringDeduplicationAgeThreshold=1` 让实验更快出现。
+- `string-dedup` 场景响应通常直接包含本轮统计（`metrics.dedupedCount` / `dedupAvgPercent`）；统计行由去重线程**异步落盘、可滞后数十秒**，届时在 `/api/status` 的 `sideLogs.stringDedup` 仍能看到。
 
 ## 10. RSet / Refinement 日志
 
@@ -291,7 +299,7 @@ GC(8)       Found Roots:                 Min: 0, Avg: 2333.4, Max: 9269, Sum: 21
 GC(8)     Object Copy (ms):              Min: 26.0, Avg: 26.7, Max: 27.1, Sum: 240.6
 ```
 
-G1 在本次回收开始前，处理“脏卡”（dirty card）的统计日志，反应了RSet更新工作量：
+G1 在本次回收开始前，处理"脏卡"（dirty card）的统计日志，反应了RSet更新工作量：
 
 ```text
 GC(26) Mutator refinement: 0.00ms, refined: 0, precleaned: 0, dirtied: 1
@@ -319,7 +327,7 @@ To-space exhausted
 
 - Evacuation 时目标空间不足，存活对象复制失败。
 - G1 可能放弃当前回收、尝试 Full GC，或者在其他阶段完成整理。
-- 这通常是堆/存活集/预留空间问题，不是简单的“暂停参数”问题。
+- 这通常是堆/存活集/预留空间问题，不是简单的"暂停参数"问题。
 - 本项目的 `05-tuning-and-troubleshooting.md` 有对应处理路径。
 
 ## 12. 2G vs 4G 对照
@@ -344,10 +352,10 @@ To-space exhausted
 
 输出包含：
 
-- 各类型暂停次数、平均/最大 pause；
+- 各类型暂停次数、平均/最大 pause（含 Concurrent Start / Prepare Mixed 分类）；
 - 最长暂停原始行；
 - Full GC 清单；
-- Concurrent/Humongous/Failure 标记。
+- Concurrent/Humongous/Failure/class-unload 标记。
 
 常用命令：
 
@@ -374,26 +382,14 @@ grep 'unloading class' logs/class-unload-*.log
 grep 'Concurrent String Deduplication' logs/stringdedup-*.log
 ```
 
-## 14. 分析方法总结
-
-1. 先找 pause 汇总行，按类型统计。
-2. 再看 pause 前后的堆使用和 Region 统计。
-3. 对长暂停，打开 phases 看具体阶段。
-4. 对 Full GC，找 cause 和前面的失败证据。
-5. 对 Mixed，确认“并发周期 + CSet”都发生，而不是只看到 Concurrent Start。
-6. 对 H/RSet/字符串/类卸载，分别看对应 tag，不要只看总暂停。
-7. 最后结合分配率、live set、CPU 和业务指标决定是否调参。
-
----
-
-## v2 补充：解析器现在直接消费的行族（2026-10-24 重构）
+## 14. 解析器 v2：控制台直接消费的行族
 
 控制台不再只解析 pause 汇总行。以下行族都会进入 `/api/gc/events` 的富字段，悬停时间线图/事件表即可查看：
 
 | 行族 | 示例（真实日志） | 事件字段 | G1 概念 |
 |---|---|---|---|
 | Region 转移（info） | `GC(6) Eden regions: 194->0(213)`、`Humongous regions: 4->0` | `regionTransitions` | Region 布局与年轻代回收 |
-| 并发周期（info） | `GC(1) Concurrent Mark Cycle 10.525ms`、`Scan Root Roots`→`Scan Root Regions`、`Clear Claimed Marks`、`Cleanup for Next Mark` | 独立 `type=Concurrent` 事件 | 并发标记周期 |
+| 并发周期（info） | `Concurrent Mark Cycle 10.525ms`、`Scan Root Regions`、`Clear Claimed Marks`、`Cleanup for Next Mark` | 独立 `type=Concurrent` 事件 | 并发标记周期 |
 | 暂停阶段分解（info） | `Pre/Evacuate/Post Evacuate Collection Set: x.xms`、`Merge Heap Roots`、`Other`、Full GC `Phase 1..4` | `phases` | 暂停内部结构 |
 | CPU（info） | `GC(6) User=0.03s Sys=0.01s Real=0.00s` | `cpu` | GC 并行度（User/Real 比） |
 | Metaspace（info） | `Metaspace: 41636K(42432K)->41636K(42432K)` | `metaspace` | 类元数据回收 |
@@ -405,3 +401,393 @@ grep 'Concurrent String Deduplication' logs/stringdedup-*.log
 | PLAB / 卡表（verbose） | `Young PLAB allocation: allocated: ...`、`Dirty Cards ... Sum: 541` | `details.*Plab*` / `details.*Cards` | TLAB/PLAB、卡表 refinement |
 
 **真实 GC 块行序**（重要，与直觉相反）：JDK 21 中 pause 汇总行在块的**末尾**——先是 `gc,start`、worker、`gc,phases`、`gc,heap` Region、Metaspace 行，然后才是 `GC(n) Pause ... 211M->19M(2048M) 5.415ms` 汇总行，`gc,cpu` 行跟在最后。聚合器（`GcCycleAggregator`）用 orphan 缓冲支持"细节先到、汇总后到"的回填。
+
+JDK 21 中**不存在**这些行名（不要去匹配）：`Concurrent Complete Cleanup`、`Concurrent Undo Cycle`、`SATB Filtering`、字面的 `Soft/Phantom Processing`、`Free CSet`、`Per GC Thread`。
+
+## 15. 分析方法总结
+
+1. 先找 pause 汇总行，按类型统计。
+2. 再看 pause 前后的堆使用和 Region 统计。
+3. 对长暂停，打开 phases 看具体阶段（控制台悬停事件的 `phases` 字段即是）。
+4. 对 Full GC，找 cause 和前面的失败证据。
+5. 对 Mixed，确认"并发周期 + CSet"都发生，而不是只看到 Concurrent Start。
+6. 对 H/RSet/字符串/类卸载，分别看对应 tag，不要只看总暂停。
+7. 最后结合分配率、live set、CPU 和业务指标决定是否调参。
+
+---
+
+## 第二部分：样例文件逐份分析
+
+> 统计表与文件清单对齐 **2026-10-24** 的样例（`generate-sample-logs.sh` 再生成）；关键行与时间线叙事保留自 2026-10-20 的运行记录——格式相同，数值以你本机复现输出为准。
+
+## 16. 分析对象与生成方式
+
+环境：
+
+```text
+JDK 21.0.11 / Spring Boot 3.5.16 / PROFILE=verbose
+2G 运行：HEAP=2g, Region=1M, IHOP=30, MaxTenuringThreshold=3, StringDedup age=1
+4G 运行：HEAP=4g, Region=2M, 其余相同
+```
+
+生成命令：
+
+```bash
+./scripts/generate-sample-logs.sh        # 加 CLEANUP=1 自动清除运行残留
+```
+
+生成过程：启动 2G verbose 实例 → 依次执行 10 个场景 → 保存四类日志与场景 JSON → 启动 4G 实例跑冒烟 → 裁剪日志到 `docs/samples/`。
+
+## 17. 文件清单
+
+| 文件 | 类型 | 行数/大小 | 说明 |
+|---|---|---|---|
+| `gc-scenarios-2g.log` | GC 日志 | 587 行 / 约 68KB | 2G、1M Region，全部场景 |
+| `gc-scenarios-4g.log` | GC 日志 | 179 行 / 约 20KB | 4G、2M Region，冒烟场景 |
+| `scenario-results-2g.json` | API 响应 | 10 个对象 | 全部 2G 场景结果 |
+| `scenario-results-4g.json` | API 响应 | 4 个对象 | 4G 冒烟结果 |
+| `class-unload-2g.log` | class unload 日志 | 20 行（摘录） | 完整 500 行在 `logs/` |
+| `stringdedup-2g.log` | stringdedup 日志 | 32 行 | 完整去重统计 |
+| `safepoint-2g.log` | safepoint 日志 | 89 行 | G1 全部安全点 |
+
+> 2G GC 日志末尾附加了 class unload 与 stringdedup 摘要，方便单文件阅读。样例含解析器 v2 消费的 Region/phases/CPU/Metaspace 行族。
+
+## 18. 2G GC 日志总体分析
+
+### 18.1 暂停统计
+
+```bash
+./scripts/analyze-gc-log.sh docs/samples/gc-scenarios-2g.log
+```
+
+当前样例输出摘要：
+
+| 类型 | 次数 | 平均(ms) | 最大(ms) |
+|---|---:|---:|---:|
+| Young | 15 | 13.421 | 66.633 |
+| Mixed | 5 | 5.746 | 10.213 |
+| Concurrent Start | 4 | 10.540 | 24.031 |
+| Prepare Mixed | 3 | 4.737 | 8.073 |
+| Remark | 4 | 2.693 | 3.168 |
+| Cleanup | 4 | 0.280 | 0.467 |
+| Full | 4 | 20.860 | 25.885 |
+| **总计** | **39** | **9.788** | **66.633** |
+
+结论：
+
+- 以 Young 为主，符合短命对象洪峰；
+- Mixed 出现 5 次，混合回收路径被实际触发；
+- Full 4 次全部来自显式 GC：full-gc、class-unload、reset（class-unload 场景一次触发 2 个 Full 计数）；
+- 最长暂停来自 promotion 的晋升回收（Object Copy 成本），而不是 Full GC；
+- **暂停次数多不等于单次长**，要分别看分配率、存活集和阶段。
+
+### 18.2 启动 Region ergonomics
+
+```text
+[info ][gc       ] Using G1
+[info ][gc,init  ] Heap Region Size: 1M
+[info ][gc,init  ] Heap Max Capacity: 2G
+```
+
+- 2G/2048 ≈ 1M，符合 G1 约 2048 Region 的 ergonomics；
+- 1M Region 的 Humongous 阈值约 512KB；
+- 场景普通 chunk 使用 256KB，避免误入 H 对象。
+
+### 18.3 事件时间线（2026-10-20 运行记录，作叙事示例）
+
+| 时间 | GC | 类型 | 堆 | Pause |
+|---|---|---|---:|---:|
+| 0.650s | GC(0) | Concurrent Start (Metadata) | 147M->9M | 5.587ms |
+| 1.5s 左右 | GC(2/3) | Prepare Mixed / Mixed (Metadata) | 约 151M->18M | 约 8-9ms |
+| 2.x s | - | Normal Young（启动/预热） | 约 211M->18M | 约 5ms |
+| 3.638s | GC(8) | Young Normal（Promotion） | 732M->432M | **34.789ms** |
+| 7.510s | GC(20) | Humongous 清理 | H 96->48 | - |
+| 9.286s | GC(21) | Humongous 清理 | H 49->1 | - |
+| 11.043s | GC(22) | Concurrent Start | 1613M->934M | 9.070ms |
+| 11.069s | GC(23) | Remark | 1070M->200M | 2.668ms |
+| 11.075s | GC(23) | Cleanup | 271M->271M | 0.313ms |
+| 12.813s | GC(26) | **Mixed** | 743M->29M | 3.209ms |
+| 14.598s | GC(31) | Full | 255M->18M | 20.377ms |
+| 16.966s | GC(32) | Full（class unload） | 78M->19M | 27.204ms |
+| 19.965s | GC(33) | Full（reset） | 21M->18M | 21.704ms |
+
+说明：
+
+- 启动阶段 `Metadata GC Threshold` 会打乱"干净堆"假设，因此不要拿第一次 GC 当作纯业务场景。
+- promotion 的长 pause 说明**存活对象复制/晋升**比 Full GC 更值得分析。
+- Mixed 在 Cleanup 后约 1.7s 出现，证明"Cleanup 之后下一次 Young Pause"这个时序假设。
+
+### 18.4 Mixed 详细分析（2026-10-20 记录）
+
+关键行：
+
+```text
+GC(22) Pause Young (Concurrent Start) (G1 Evacuation Pause) 1613M->934M(2048M) 9.070ms
+GC(23) Pause Remark 1070M->200M(2048M) 2.668ms
+GC(23) Pause Cleanup 271M->271M(2048M) 0.313ms
+GC(26) Pause Young (Mixed) (G1 Evacuation Pause) 743M->29M(2048M) 3.209ms
+```
+
+分析：
+
+1. 堆占用达到 IHOP（lab 30%），Concurrent Start 启动标记周期。
+2. Remark 将堆从 1070M 降到 200M，说明标记/清理了大量浮动垃圾。
+3. Cleanup 回收空 Region，为 Mixed 准备 CSet。
+4. 约 1.7s 后下一次 Young Pause 真正带回 Old Region，出现 Mixed。
+5. Mixed 后堆从 743M 降到 29M，是本次实验中最明显的回收效果之一。
+6. GC id 中的 GC(22)、GC(23)、GC(26) 不连续，是并发阶段内部编号导致的，不能按 id 强行配对每次阶段。
+
+配套 JSON（当前样例）：
+
+```json
+{
+  "scenario": "mixed-gc",
+  "gcDelta": 12,
+  "observedEventTypes": ["Young", "Concurrent", "Concurrent Start", "Remark", "Cleanup", "Prepare Mixed", "Mixed"]
+}
+```
+
+> `Concurrent` 是解析器 v2 为并发周期阶段生成的独立事件类型；它出现说明标记周期的并发阶段被记录到了。
+
+### 18.5 Full GC 分析（2026-10-20 记录）
+
+```text
+GC(31) Pause Full (System.gc()) 255M->18M(2048M) 20.377ms
+GC(32) Pause Full (System.gc()) 78M->19M(2048M) 27.204ms
+GC(33) Pause Full (System.gc()) 21M->18M(2048M) 21.704ms
+```
+
+- 都来自显式 `System.gc()`，不是 allocation failure。
+- 每次堆都不大（≤255MB），但 Full GC 仍明显慢于 Young。
+- 后续 `class-unload` 与 `reset` 也使用显式 GC，因此这些 Full 是设计行为。
+- 生产环境不能用低占用下的绝对值判断"Full GC 快"；堆大时 Full GC 会更重。
+
+### 18.6 Humongous 分析（2026-10-20 记录）
+
+```text
+GC(20) Humongous regions: 96->48
+GC(21) Humongous regions: 49->1
+GC(22) Humongous regions: 1->1
+```
+
+- 分配 32 个 2MB 对象（1M Region，H 阈值 512KB），保留一半；
+- H Region 从 96 降到 48，再降到 1，说明释放/回收链路有效；
+- H 对象数量与 region 大小直接相关，不能只看"对象个数"。
+
+## 19. 4G GC 日志分析
+
+### 19.1 暂停统计（当前样例）
+
+```bash
+./scripts/analyze-gc-log.sh docs/samples/gc-scenarios-4g.log
+```
+
+| 类型 | 次数 | 平均(ms) | 最大(ms) |
+|---|---:|---:|---:|
+| Young | 2 | 3.979 | 4.710 |
+| Mixed | 1 | 9.306 | 9.306 |
+| Concurrent Start | 2 | 6.601 | 6.796 |
+| Prepare Mixed | 1 | 8.600 | 8.600 |
+| Remark | 2 | 2.489 | 2.575 |
+| Cleanup | 2 | 0.209 | 0.217 |
+| Full | 2 | 19.755 | 22.462 |
+| **总计** | **12** | **6.998** | **22.462** |
+
+### 19.2 Region 差异
+
+```text
+[info][gc,init] Heap Region Size: 2M
+[info][gc,init] Heap Max Capacity: 4G
+```
+
+- 4G → 2M Region，Region 数仍约 2048；
+- H 阈值上升到约 1MB；
+- 同一个 2MB 对象在 4G 下仍为 H 对象，但占用的 Region 数不同。
+
+### 19.3 Humongous / Full（2026-10-20 记录）
+
+```text
+GC(7) Humongous regions: 64->32
+GC(8) Humongous regions: 32->32
+GC(9) Humongous regions: 32->0
+GC(8) Pause Full (System.gc()) 369M->81M(4096M) 22.720ms
+```
+
+- H 回收路径与 2G 一致，但数量不同；
+- 4G 的 Full pause 不能与 2G 直接比较，因为本次 4G 只跑了冒烟场景。
+
+## 20. Class Unload 日志分析
+
+文件：`class-unload-2g.log`（前 20 行摘录；完整 500 行在 `logs/`）。
+
+示例：
+
+```text
+[info][class,unload] unloading class DynamicClasses$C499 0x000000e801710a50
+[info][class,unload] unloading class DynamicClasses$C498 0x000000e801710840
+```
+
+统计（本机完整日志）：
+
+```bash
+grep -c 'unloading class' logs/class-unload-*.log
+# 500
+```
+
+与场景 JSON 对照（当前样例 metrics）：
+
+```text
+unloadedClasses: 500
+Metaspace 40 MB -> 50 MB -> 49 MB
+```
+
+分析：
+
+- 500 个动态加载的嵌套类都触发了卸载；
+- **真正证明卸载发生的是 `unloading class` 行 / 响应里的 `unloadedClasses`**，不仅是 Metaspace 数字；
+- committed Metaspace 不立即归还 OS，因此不能用"RSS 没降"否定类卸载。
+
+## 21. String Dedup 日志分析
+
+文件：`stringdedup-2g.log`，32 行，全部是 `Concurrent String Deduplication` 统计。
+
+关键行（2026-10-20 记录）：
+
+```text
+Concurrent String Deduplication 16021/1109.5K (new), 15344/924.4K (deduped), avg 83.3%, 14.627ms of 14.956ms
+...
+Concurrent String Deduplication 9/1072.0B (new), 30030/15469.3K (deduped), avg 637.0%, 68.089ms of 68.090ms
+```
+
+分析：
+
+- 前几行来自启动/预热；
+- 高峰行中，去重线程处理了约 30000 个字符串，节省约 15.1MB；
+- `avg 637.0%` 是 JDK 内部统计口径，不要按字面理解成"效率 637%"；重点是 `deduped` 数量和大小；
+- 去重线程耗时是并发阶段，不是 STW；
+- age threshold 设为 1 后，短实验也能触发去重；
+- 统计行**异步落盘可滞后数十秒**：场景响应可能提示"尚未落盘"，稍后 `/api/status` 的 `sideLogs.stringDedup` 一定可见（实测详见 docs/07 的踩坑记录）。
+
+## 22. Safepoint 日志分析
+
+文件：`safepoint-2g.log`，89 行。
+
+统计脚本见第 25 节。2026-10-20 记录的聚合：
+
+| Safepoint 原因 | 次数 | 平均(ns) | 最大(ns) |
+|---|---:|---:|---:|
+| G1CollectForAllocation | 23 | 7,933,548 | 34,896,041 |
+| G1CollectFull | 3 | 23,207,458 | 27,359,250 |
+| CollectForMetadataAllocation | 4 | 8,629,073 | 15,837,959 |
+| G1PauseRemark | 4 | 2,592,333 | 2,766,875 |
+| G1PauseCleanup | 4 | 406,520 | 519,833 |
+| Cleanup | 14 | 99,136 | 503,042 |
+| ICBufferFull | 28 | 114,267 | 160,959 |
+
+最长：
+
+```text
+Safepoint "G1CollectForAllocation", Time since last: 795532375 ns,
+Reaching safepoint: 3583 ns, Cleanup: 35000 ns,
+At safepoint: 34857458 ns, Total: 34896041 ns
+```
+
+分析：
+
+- `At safepoint` 占了 34.857ms，几乎等于 34.789ms 的 Young pause；safepoint 日志和 GC pause 时间是同一事件的两种视角。
+- `G1CollectForAllocation` 是最常见原因，说明分配触发的 GC 占主导。
+- `ICBufferFull` 是最频繁但最短的安全点，属于 JIT 代码缓存管理。
+- 读 safepoint 日志时先看 `At safepoint`，再看 `Total`；不要把所有安全点都当成 GC。
+
+## 23. 场景 JSON 分析
+
+### 23.1 2G 全场景（当前样例）
+
+| 场景 | 耗时(ms) | 分配(MB) | retained(MB) | GC 增量 | 观察到的事件 |
+|---|---:|---:|---:|---:|---|
+| young-gc | 75 | 287 | 0 | 2 | Young |
+| promotion | 240 | 768 | 256 | 1 | Young |
+| mixed-gc | 1532 | 2763 | 204 | 12 | Young, Concurrent, Concurrent Start, Remark, Cleanup, Prepare Mixed, Mixed |
+| humongous | 42 | 339 | 32 | 1 | Mixed |
+| cross-region | 45 | 409 | 22 | 1 | Mixed |
+| string-dedup | 8143 | 1264 | 31 | 4 | Concurrent, Concurrent Start, Young, Remark, Cleanup |
+| allocation-storm | 65 | 3072 | 31 | 6 | Prepare Mixed, Mixed, Young |
+| full-gc | 5154 | 0 | 31 | 1 | Full |
+| class-unload | 2694 | 0 | 31 | 2 | Full |
+| reset | 320 | 0 | 0 | 1 | Full |
+
+注意：
+
+- `retained` 是场景结束时的 retained，不是分配量；后续场景开始时会清空。
+- young 实际只分配了 287MB 就达到 2 次 GC 的停止条件，不是固定分配 1.2GB。
+- allocation-storm 达到 3GB 上限提前结束，响应中会记录实际值。
+- string-dedup 耗时 8.1s 是 v2 的**一手证据等待窗口**（去重统计异步落盘，最多等 8s）；该样例批次统计行恰好滞后超过窗口，故响应未带上，但 `/api/status` 可见。
+- full-gc 耗时 5.1s 来自等待 `Pause Full` 事件的日志消费链路。
+- 场景不是隔离的：promotion 之后的 Old 状态会影响 mixed；要严格对比需重启或 reset。
+
+### 23.2 4G 冒烟（当前样例）
+
+| 场景 | 耗时(ms) | 分配(MB) | GC 增量 | 事件 |
+|---|---:|---:|---:|---|
+| young-gc | 63 | 512 | 1 | Young |
+| humongous | 47 | 416 | 1 | Young |
+| full-gc | 355 | 0 | 1 | Full |
+| reset | 325 | 0 | 1 | Full |
+
+4G 只做冒烟，不用于完整对比统计，避免把不同 workload 混在一起。
+
+## 24. 一致性检查
+
+| 检查项 | 结果 |
+|---|---|
+| `/api/status` 2G Region | 1M / 2048 |
+| `/api/status` 4G Region | 2M / 2048 |
+| 2G 日志启动行 | `Heap Region Size: 1M` |
+| 4G 日志启动行 | `Heap Region Size: 2M` |
+| Mixed 触发 | `observedEventTypes` 包含 Mixed |
+| Full cause | `System.gc()` |
+| class unload | 500 条 unloading / `unloadedClasses: 500` |
+| string dedup | 32 条去重统计（独立日志） |
+| 解析器 v2 | 事件含 Concurrent 独立类型与 region/phases 富字段 |
+| 脚本统计与解析器一致 | analyze 输出与 `/api/gc/events` 计数一致 |
+
+## 25. 复现分析命令
+
+```bash
+# 总体暂停统计
+./scripts/analyze-gc-log.sh docs/samples/gc-scenarios-2g.log
+./scripts/analyze-gc-log.sh docs/samples/gc-scenarios-4g.log
+
+# 场景结果（jq）
+jq -r '.[] | [.scenario,.elapsedMs,.allocatedMb,.retainedMb,.gcDelta,(.observedEventTypes|join("|"))] | @tsv' \
+  docs/samples/scenario-results-2g.json
+
+# safepoint 原因聚合
+python3 - <<'PY'
+import re, collections
+rows = []
+for line in open('docs/samples/safepoint-2g.log'):
+    m = re.search(r'Safepoint "([^"]+)".*Total: (\d+) ns', line)
+    if m:
+        rows.append((m.group(1), int(m.group(2))))
+d = collections.defaultdict(list)
+for reason, total in rows:
+    d[reason].append(total)
+print('total', len(rows), 'max_ns', max(t for _, t in rows))
+for reason, vals in sorted(d.items(), key=lambda x: -max(x[1])):
+    print(reason, len(vals), sum(vals) // len(vals), max(vals))
+PY
+```
+
+其余 grep 速查见第一部分第 13 节。
+
+## 26. 分析结论
+
+1. 2G 下 Region=1M，H 阈值 512KB；4G 下 Region=2M，H 阈值 1MB。
+2. 本项目的 Mixed 路径真实发生，且需要"并发周期 + Cleanup 后的下一次 Young"两个条件。
+3. 最长的 GC 暂停来自晋升/复制，不是 Full GC。
+4. 显式 Full GC 的 cause 明确为 System.gc()，不代表生产中的 allocation failure。
+5. 类卸载以 `unloading class` 为准；Metaspace committed 不立即回落。
+6. 字符串去重是并发工作，独立日志 tag 为 `stringdedup`，不能被 `gc*` 自动包含；统计行异步落盘可能滞后。
+7. Safepoint 日志的 `At safepoint` 与 GC pause 可以互相对照。
+8. 这些数值只对当前参数和 JDK 21 有效；换堆、Region、pause target 后必须重新测量。

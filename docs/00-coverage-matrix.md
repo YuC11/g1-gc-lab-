@@ -6,7 +6,7 @@
 
 | 知识域 | 关键点 | 项目落点 | 验证方式 |
 |---|---|---|---|
-| 设计目标 | 可预测停顿、吞吐与延迟折中、分代 + Region | `01-g1-internals.md` | 文档 |
+| 设计目标 | 可预测停顿、吞吐与延迟折中、分代 + Region | `01-g1-internals.md` 第一部分 | 文档 |
 | 堆布局 | Eden / Survivor / Old / Humongous / Free Region | 面板堆组成、`Humongous` 场景 | `/api/status`、GC 日志 heap 行 |
 | Region 大小 | 约 2048 个 Region、2 的幂、1–32MB；2G→1M、4G→2M | `HEAP=2g/4g`、`REGION_SIZE=1m/2m/4m` | `/api/config`、启动日志 `Heap Region Size` |
 | Region 状态转换 | 空闲、Eden、Survivor、Old、Humongous、CSet | `01-g1-internals.md`、面板 Region 信息 | 日志 `Eden regions` 等 |
@@ -130,7 +130,7 @@
 
 ## 9. 延伸学习
 
-- 全流程与内部数据结构：[12-g1-end-to-end-internals.md](12-g1-end-to-end-internals.md)
+- 全流程与内部数据结构深潜：[01-g1-internals.md](01-g1-internals.md) 第二部分
 - 系统学习路线：[10-g1-learning-path.md](10-g1-learning-path.md)
 - 调优实验工作坊：[11-g1-tuning-workshop.md](11-g1-tuning-workshop.md)
-- 逐文件日志分析：[09-gc-log-file-analysis.md](09-gc-log-file-analysis.md)
+- 样例日志逐文件分析：[03-gc-log-analysis.md](03-gc-log-analysis.md) 第二部分

@@ -30,4 +30,4 @@
 ./scripts/analyze-gc-log.sh docs/samples/gc-scenarios-2g.log
 ```
 
-逐段讲解见 [../03-gc-log-analysis.md](../03-gc-log-analysis.md)；各文件的统计与结论见 [../09-gc-log-file-analysis.md](../09-gc-log-file-analysis.md)。
+逐段讲解见 [../03-gc-log-analysis.md](../03-gc-log-analysis.md) 第一部分；各文件的统计与结论见同文第二部分。

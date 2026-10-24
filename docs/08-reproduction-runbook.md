@@ -78,7 +78,7 @@ mvn test
 预期：
 
 ```text
-Tests run: 15, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 63, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 ## 3. 启动 2G 实例
@@ -152,203 +152,10 @@ open http://127.0.0.1:8080
 
 ## 4. 按顺序执行场景
 
-下面每一步都给出请求、预期事件和日志观察点。可以点击页面，也可以使用 curl。
+每个场景的请求参数、预期事件与日志观察点的**唯一手册是 [04-scenario-playbook.md](04-scenario-playbook.md)**——本文不再复述，避免两处维护产生分叉。
 
 > 每个请求最多可能分配数 GB 内存；不要并发执行。接口本身有互斥保护，冲突会返回 409。
-
-### 4.1 Young GC
-
-```bash
-curl -s -X POST http://127.0.0.1:8080/api/scenarios/young-gc/run \
-  -H 'Content-Type: application/json' -d '{}' | jq
-```
-
-预期：
-
-- `observedEventTypes` 至少包含 `Young`
-- 日志出现 `Pause Young (Normal)` 或从 Mixed 开始的周期
-
-查看：
-
-```bash
-grep -E 'Pause Young' logs/gc-*.log | tail -5
-```
-
-### 4.2 Promotion
-
-```bash
-curl -s -X POST http://127.0.0.1:8080/api/scenarios/promotion/run \
-  -H 'Content-Type: application/json' -d '{}' | jq
-```
-
-预期：
-
-- `Old 使用量` 明显增长
-- 响应 metrics 中 `oldAfterMb > oldBeforeMb + 8`
-
-查看：
-
-```bash
-grep -E 'Old regions|Survivor regions|Pause Young' logs/gc-*.log | tail -10
-```
-
-### 4.3 Mixed GC
-
-```bash
-curl -s -X POST http://127.0.0.1:8080/api/scenarios/mixed-gc/run \
-  -H 'Content-Type: application/json' -d '{}' | jq
-```
-
-预期 `observedEventTypes` 同时包含：
-
-```text
-Concurrent Start
-Remark
-Cleanup
-Prepare Mixed
-Mixed
-```
-
-查看：
-
-```bash
-grep -E 'Pause Young \(Mixed\)|Concurrent Start|Pause Remark|Pause Cleanup' logs/gc-*.log | tail -15
-```
-
-如果响应 `mixedSeen:false`：
-
-1. 确认是在 `PROFILE=default` 或 `verbose` 下运行。
-2. 确认 `/api/status` 的 `logWatcher.available=true`。
-3. 先执行 reset，再重试。
-4. 查看 GC 日志是否已经出现 `Concurrent Start`/`Cleanup`；如果只出现 Cleanup 没有下一次 Young，说明还需要更多压力，这是正常边界，见 05 文档。
-
-### 4.4 Humongous
-
-```bash
-curl -s -X POST http://127.0.0.1:8080/api/scenarios/humongous/run \
-  -H 'Content-Type: application/json' -d '{}' | jq
-```
-
-预期：
-
-- 响应显示 region 大小与 H 阈值
-- 日志 `Humongous regions` 发生变化
-
-查看：
-
-```bash
-grep -E 'Humongous regions|Pause Young' logs/gc-*.log | tail -10
-```
-
-### 4.5 Cross-Region / RSet
-
-```bash
-curl -s -X POST http://127.0.0.1:8080/api/scenarios/cross-region/run \
-  -H 'Content-Type: application/json' -d '{}' | jq
-```
-
-预期：
-
-- 25 万节点被保留
-- 至少一次 Young/Mixed 回收
-- `PROFILE=verbose` 下可查 `gc,remset` / `gc,refine,stats`
-
-```bash
-grep -E 'Remembered Sets|Scanned Cards|gc,remset|gc,refine,stats' logs/gc-*.log | tail -15
-```
-
-### 4.6 String Dedup
-
-```bash
-curl -s -X POST http://127.0.0.1:8080/api/scenarios/string-dedup/run \
-  -H 'Content-Type: application/json' -d '{}' | jq
-```
-
-预期：
-
-- `UseStringDeduplication=true`
-- 独立日志 `logs/stringdedup-*.log` 出现 `Concurrent String Deduplication`
-
-查看：
-
-```bash
-grep 'Concurrent String Deduplication' logs/stringdedup-*.log | tail -5
-```
-
-### 4.7 Allocation Storm
-
-```bash
-curl -s -X POST http://127.0.0.1:8080/api/scenarios/allocation-storm/run \
-  -H 'Content-Type: application/json' \
-  -d '{"threads":4,"durationMs":8000,"chunkKb":256}' | jq
-```
-
-预期：
-
-- 多次 Young GC
-- 可能进入 Mixed
-- 单场景分配达到 3GB 上限时提前结束，响应会记录实际分配量
-
-### 4.8 Full GC
-
-```bash
-curl -s -X POST http://127.0.0.1:8080/api/scenarios/full-gc/run \
-  -H 'Content-Type: application/json' -d '{}' | jq
-```
-
-预期：
-
-```text
-Pause Full (System.gc())
-Phase 4: Compact heap（verbose 可见）
-```
-
-验证：
-
-```bash
-grep -E 'Pause Full|Phase 4: Compact heap' logs/gc-*.log | tail -5
-```
-
-对比实验：
-
-```bash
-# 先停止当前实例，再用禁用显式 GC 启动
-EXTRA_JAVA_OPTS='-XX:+DisableExplicitGC' MAVEN_CMD=mvn ./scripts/run.sh
-# 再调用 full-gc，应得到提示而不是 Full GC
-
-# 或者
-EXTRA_JAVA_OPTS='-XX:+ExplicitGCInvokesConcurrent' MAVEN_CMD=mvn ./scripts/run.sh
-```
-
-### 4.9 Class Unload
-
-```bash
-curl -s -X POST http://127.0.0.1:8080/api/scenarios/class-unload/run \
-  -H 'Content-Type: application/json' -d '{}' | jq
-```
-
-预期：
-
-- 加载 500 个动态类
-- Metaspace 先升后降
-- 独立日志出现 500 条 `unloading class`
-
-```bash
-grep -c 'unloading class' logs/class-unload-*.log
-grep 'unloading class' logs/class-unload-*.log | head -5
-```
-
-### 4.10 Reset
-
-```bash
-curl -s -X POST http://127.0.0.1:8080/api/scenarios/reset | jq
-```
-
-预期：
-
-- retained 清零
-- 默认执行显式 GC
-- Full GC 事件
+> 建议顺序：young-gc → promotion → mixed-gc → humongous → cross-region → string-dedup → allocation-storm → full-gc → class-unload → reset。
 
 ## 5. 分析日志
 
@@ -493,7 +300,7 @@ curl -s http://127.0.0.1:8080/api/status | jq '.jvm.regionSizeBytes, .heap.heapM
 
 ## 9. 验收清单
 
-- [ ] `./mvnw test` 或 `mvn test`：15 tests 通过
+- [ ] `./mvnw test` 或 `mvn test`：63 tests 通过
 - [ ] `/actuator/health` 返回 UP
 - [ ] `/api/status` 显示 JDK 21、G1、正确堆/Region
 - [ ] `/api/scenarios` 返回 10 个实现
@@ -516,10 +323,10 @@ curl -s http://127.0.0.1:8080/api/status | jq '.jvm.regionSizeBytes, .heap.heapM
 Ctrl-C
 ```
 
-清理运行日志（不会删除文档样例）：
+清理运行残留（白名单删除，不会动 docs/samples/ 与源码）：
 
 ```bash
-rm -rf logs
+./scripts/cleanup.sh              # 先 --dry-run 预览
 ```
 
 重新生成：

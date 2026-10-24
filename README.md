@@ -175,32 +175,49 @@ A/B 结果写入 `reports/tuning-<timestamp>/`，不会修改 `docs/samples/`。
 
 第一条命令会启动 2G 实例跑完整场景，再启动 4G 实例做对比，并把裁剪后的真实日志写入 `docs/samples/`。完整日志在 `logs/`（已 gitignore）。
 
-## 文档索引
+## 文档索引（11 篇，按用途分组）
+
+**上手操作**
 
 | 文档 | 内容 |
 |---|---|
-| [00-coverage-matrix.md](docs/00-coverage-matrix.md) | G1 核心知识面覆盖矩阵 |
-| [01-g1-internals.md](docs/01-g1-internals.md) | Region、RSet、SATB、Humongous、GC 周期 |
-| [02-g1-flags.md](docs/02-g1-flags.md) | JDK 21 G1 参数表与调优顺序 |
-| [03-gc-log-analysis.md](docs/03-gc-log-analysis.md) | 真实 GC 日志逐段解析 |
-| [04-scenario-playbook.md](docs/04-scenario-playbook.md) | 每个请求场景的操作与观察点 |
+| [04-scenario-playbook.md](docs/04-scenario-playbook.md) | 场景操作唯一手册：每个场景的参数、预期与观察点 |
+| [08-reproduction-runbook.md](docs/08-reproduction-runbook.md) | 从零复现：环境、构建、启动、4G 对照、验收清单 |
+
+**参考知识**
+
+| 文档 | 内容 |
+|---|---|
+| [01-g1-internals.md](docs/01-g1-internals.md) | G1 内部机制：第一部分概念模型（Region/RSet/SATB/周期），第二部分全流程与数据结构深潜（TAMS/Bitmap/Mark Stack） |
+| [02-g1-flags.md](docs/02-g1-flags.md) | JDK 21 G1 参数表、堆与 Region 推导公式、调优顺序 |
 | [05-tuning-and-troubleshooting.md](docs/05-tuning-and-troubleshooting.md) | 症状驱动的排障手册 |
 | [06-tools-and-observability.md](docs/06-tools-and-observability.md) | JMX、JFR、jcmd、jstat、actuator |
-| [07-implementation-journal.md](docs/07-implementation-journal.md) | 实现步骤、实际命令、问题与修复记录 |
-| [08-reproduction-runbook.md](docs/08-reproduction-runbook.md) | 从零复现、逐场景操作、验收清单 |
-| [09-gc-log-file-analysis.md](docs/09-gc-log-file-analysis.md) | 每个日志样例的统计与分析记录 |
-| [10-g1-learning-path.md](docs/10-g1-learning-path.md) | 从 Region 到调优的 10 个学习模块、7 天安排与自测题 |
-| [11-g1-tuning-workshop.md](docs/11-g1-tuning-workshop.md) | G1 调优方法论、A/B 实验和工作簿 |
-| [12-g1-end-to-end-internals.md](docs/12-g1-end-to-end-internals.md) | G1 全流程、起始标记、Bitmap/TAMS/SATB/RSet 等数据结构 |
 
-阅读路径：
+**证据解读**
 
-- 想**从零复现**：先看 [08-reproduction-runbook.md](docs/08-reproduction-runbook.md)。
-- 想看**每一步做了什么、遇到什么问题**：看 [07-implementation-journal.md](docs/07-implementation-journal.md)。
-- 想**系统学习 G1**：按 [10-g1-learning-path.md](docs/10-g1-learning-path.md) 的模块做实验。
-- 想**深入内部机制**：读 [12-g1-end-to-end-internals.md](docs/12-g1-end-to-end-internals.md)，重点看初始标记、TAMS 与 mark bitmap。
-- 想**练调优**：用 [11-g1-tuning-workshop.md](docs/11-g1-tuning-workshop.md) 和 `scripts/tuning-lab.sh`。
-- 想直接看**日志证据与统计**：看 [09-gc-log-file-analysis.md](docs/09-gc-log-file-analysis.md) 和 [03-gc-log-analysis.md](docs/03-gc-log-analysis.md)。
+| 文档 | 内容 |
+|---|---|
+| [03-gc-log-analysis.md](docs/03-gc-log-analysis.md) | 第一部分按主题读日志，第二部分样例文件逐份分析 |
+
+**实践路径**
+
+| 文档 | 内容 |
+|---|---|
+| [10-g1-learning-path.md](docs/10-g1-learning-path.md) | 10 个学习模块、7 天安排与自测题 |
+| [11-g1-tuning-workshop.md](docs/11-g1-tuning-workshop.md) | 调优方法论、A/B 实验和工作簿 |
+
+**档案与索引**
+
+| 文档 | 内容 |
+|---|---|
+| [00-coverage-matrix.md](docs/00-coverage-matrix.md) | G1 核心知识面覆盖矩阵（知识点 × 项目落点） |
+| [07-implementation-journal.md](docs/07-implementation-journal.md) | 开发档案：实现步骤、实际命令、踩坑与修复记录 |
+
+阅读路径（三条主线）：
+
+1. **第一次跑**：[08 复现手册](docs/08-reproduction-runbook.md) 起步 → 场景操作查 [04 手册](docs/04-scenario-playbook.md) → 日志看不懂查 [03 日志解读](docs/03-gc-log-analysis.md)。
+2. **系统学习 G1**：[01 内部机制](docs/01-g1-internals.md)（先概念卡后深潜）→ 按 [10 学习路线](docs/10-g1-learning-path.md) 做实验 → 用 [11 调优工作坊](docs/11-g1-tuning-workshop.md) + `scripts/tuning-lab.sh` 练单变量 A/B。
+3. **排查具体问题**：[05 排障手册](docs/05-tuning-and-troubleshooting.md) 按症状定位 → 工具细节查 [06 工具链](docs/06-tools-and-observability.md)。
 
 ## 项目结构
 

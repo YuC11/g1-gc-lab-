@@ -7,11 +7,13 @@ POST /api/scenarios/{id}/run
 Content-Type: application/json
 ```
 
-请求体可以省略，也可以只覆盖想调整的参数：
+请求体可以省略，也可以只覆盖想调整的参数。参数**按场景命名**，完整契约见 `GET /api/scenarios`：
 
 ```json
-{"totalMb": 512, "churnMb": 256, "count": 32, "threads": 4, "durationMs": 8000, "chunkKb": 256, "objectMb": 2}
+{"retainedMb": 256, "churnMb": 512}
 ```
+
+上面这组键只适用于 promotion；各场景的参数名见各节示例（mixed-gc 是 `deadMb/liveMb/finalChurnMb`，humongous 是 `count/objectMb` 等）。未知参数或越界值返回 400，提示里会列出该场景可用参数。
 
 页面按钮会自动读取当前堆与 `/api/scenarios` 返回的默认值。命令行示例默认端口 8080。
 
@@ -56,7 +58,7 @@ Eden regions: ...->0(...)
 
 ```bash
 curl -s -X POST http://127.0.0.1:8080/api/scenarios/promotion/run \
-  -H 'Content-Type: application/json' -d '{"totalMb":256,"churnMb":512}'
+  -H 'Content-Type: application/json' -d '{"retainedMb":256,"churnMb":512}'
 ```
 
 默认：
@@ -105,8 +107,9 @@ Pause Young (Mixed) (G1 Evacuation Pause)
 
 - 看 `/api/status` 的 `logWatcher.available`；
 - 确认 `IHOP` 与当前堆占用；
-- 增大追加压力（场景中的 `count` 参数实际表示追加压力 MB）；
-- 检查 Old Region 是否全是活对象。
+- 增大 `finalChurnMb`（追加压力分配量）；
+- 检查 Old Region 是否全是活对象；
+- verbose 下查看事件 details 的 `ergo` 字段——若出现 `do not continue mixed GCs (candidate old regions not available)`，说明没有更多合适的 Old CSet，这不是失败而是 G1 的正常决策。
 
 2G 下本机实测约 1.4 秒完成；4G 下参数按比例放大，但总分配有上限保护。
 
@@ -235,7 +238,8 @@ curl -s -X POST http://127.0.0.1:8080/api/scenarios/string-dedup/run \
 
 字符串内容相同但底层数组独立；经历多次 Young GC 后，达到年龄阈值的字符串参与并发去重。
 
-- 详细统计需要 `PROFILE=verbose`（`stringdedup` 独立日志）。
+- **响应直接返回一手证据**：`metrics.dedupedCount` / `metrics.dedupAvgPercent`（observations 里有人类可读版本），来自 stringdedup 独立日志的实时解析，不必手动翻文件。
+- 统计行由去重线程**异步落盘，实测可滞后数十秒**：响应若提示"尚未落盘"，稍后在 `/api/status` 的 `sideLogs.stringDedup` 或日志面板查看（踩坑记录见 docs/07）。
 - 如果显示 `UseStringDeduplication=false`，说明当前启动参数没有开启。
 - 去重节省堆，但会消耗 CPU；对短命字符串通常没有收益。
 
@@ -263,8 +267,8 @@ grep 'unloading class' logs/class-unload-*.log | head
 
 观察：
 
-- `class,unload` 行出现；
-- Metaspace 回落；
+- `class,unload` 行出现；**响应直接返回 `metrics.unloadedClasses`（本轮实际卸载数）**，与 Metaspace before→loaded→after 三点对照。
+- Metaspace 回落有限是正常现象（committed 不立即归还 OS）；判断依据是 unloading 行/unloadedClasses，不是 Metaspace 数字。
 - 如果没有回落，可能是 ClassLoader/Class 仍被引用，或 GC 未发生。
 
 需要完整 JDK（javac），JRE 环境会返回 501。
@@ -316,10 +320,8 @@ curl -s -X POST http://127.0.0.1:8080/api/scenarios/reset
 
 ---
 
-## v2 补充：场景响应中的一手证据（2026-10-24 重构）
+## 控制台配合能力
 
-- **string-dedup**：响应直接包含本轮去重统计（`metrics.dedupedCount`、`metrics.dedupAvgPercent`，observations 里有人类可读版本）——来自 stringdedup-*.log 的实时解析，不必再手动翻文件。
-- **class-unload**：响应包含 `metrics.unloadedClasses`（本轮实际观测到的 `unloading class` 行数），与 Metaspace before→loaded→after 三点对照。
-- **mixed-gc**：verbose profile 下事件 details 里的 `ergo` 字段（如 `do not continue mixed GCs (candidate old regions not available)`）直接回答"为什么 Mixed 停了"。
-- **所有场景**：可在控制台"运行历史与 A/B 对比"面板勾选两次运行做单变量对比；长场景显示阶段进度并支持取消（取消结果保留部分证据）。
+- **mixed-gc**：verbose profile 下事件 details 里的 `ergo` 字段（如 `do not continue mixed GCs (candidate old regions not available)`）直接回答"为什么 Mixed 停了"；事件的 `regionTransitions/phases` 富字段见 [03-gc-log-analysis.md](03-gc-log-analysis.md) 第一部分 §14。
+- **所有场景**：可在控制台"运行历史与 A/B 对比"面板勾选两次运行做单变量对比；长场景显示阶段进度并支持取消（`POST /api/scenarios/current/cancel`，取消结果保留部分证据）。
 - **JFR**：控制台 JFR 面板可一键录制（默认 60s），落盘 logs/jfr-*.jfr 后直接下载，用 JDK Mission Control 打开对照 GC 事件。

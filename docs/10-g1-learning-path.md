@@ -222,10 +222,10 @@ Pause Young (Mixed)
 拿 [samples/gc-scenarios-2g.log](samples/gc-scenarios-2g.log) 做三遍练习：
 
 1. 只圈出所有 pause，按类型计数。
-2. 找出最长 pause，猜它属于哪个场景，再用 09 文档验证。
+2. 找出最长 pause，猜它属于哪个场景，再用 03 文档第二部分验证。
 3. 找一次 Mixed 的完整周期，标出 STW 和并发阶段。
 
-然后拿 [09-gc-log-file-analysis.md](09-gc-log-file-analysis.md) 对照。不要先看答案。
+然后拿 [03-gc-log-analysis.md](03-gc-log-analysis.md) 第二部分对照。不要先看答案。
 
 **完成标准**：能在 5 分钟内独立说出一个日志文件的主要 GC 行为。
 
@@ -294,9 +294,9 @@ Pause Young (Mixed)
 
 ## 15. 下一步
 
-- 想深入源码级机制：读 [12-g1-end-to-end-internals.md](12-g1-end-to-end-internals.md)。
+- 想深入源码级机制：读 [01-g1-internals.md](01-g1-internals.md) 第二部分。
 - 想系统做实验：读 [11-g1-tuning-workshop.md](11-g1-tuning-workshop.md)。
-- 想看逐文件日志结论：读 [09-gc-log-file-analysis.md](09-gc-log-file-analysis.md)。
+- 想看逐文件日志结论：读 [03-gc-log-analysis.md](03-gc-log-analysis.md) 第二部分。
 - 想从零复现：读 [08-reproduction-runbook.md](08-reproduction-runbook.md)。
 - 想回顾实现与踩坑：读 [07-implementation-journal.md](07-implementation-journal.md)。
 
