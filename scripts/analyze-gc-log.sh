@@ -33,8 +33,11 @@ awk '
         if (f[i] == "Pause") {
             kind = f[i + 1]
             if (kind == "Young") {
-                subtype = f[i + 2]
-                gsub(/[()]/, "", subtype)
+                # 括号内的子类型可能含空格（Concurrent Start / Prepare Mixed），
+                # 不能按空白切字段取，必须整段提取。
+                subtype = $0
+                sub(/^.*Pause Young \(/, "", subtype)
+                sub(/\).*/, "", subtype)
                 if (subtype == "Mixed") type = "Mixed"
                 else if (subtype == "Concurrent Start") type = "Concurrent Start"
                 else if (subtype == "Prepare Mixed") type = "Prepare Mixed"
@@ -95,7 +98,9 @@ END {
 
 echo
 echo "Concurrent / humongous / failure markers"
-grep -E 'Concurrent (Mark|Start|Cleanup|Remark)|Humongous regions|To-space exhausted|Evacuation Failure|Allocation Failure|Concurrent String Deduplication|class,unload|Unloading class' "$FILE" \
+# unloading class 为小写（与 -Xlog:class+unload 实际输出一致）；并发标记与
+# generate-sample-logs.sh 的 v2 提取规则保持同步。
+grep -E 'Concurrent (Mark|Start|Cleanup|Remark|Scan Root|Clear Claimed)|Humongous regions|To-space exhausted|Evacuation Failure|Allocation Failure|Concurrent String Deduplication|unloading class' "$FILE" \
   | tail -40 || true
 
 echo

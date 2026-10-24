@@ -19,6 +19,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# 共享函数库（g1_select_maven / g1_wait_ready / g1_stop_app），见 scripts/_common.sh。
+# shellcheck source=scripts/_common.sh
+source "$ROOT/scripts/_common.sh"
+
 # 汇总 scenario 响应依赖 jq；analyze-gc-log.sh 刻意只用 awk，这里不同。
 if ! command -v jq >/dev/null 2>&1; then
   echo "tuning-lab.sh 需要 jq（解析 scenario JSON 响应）。安装示例：brew install jq" >&2
@@ -32,20 +36,11 @@ SKIP_BUILD="${SKIP_BUILD:-0}"
 OUT="$ROOT/reports/tuning-$(date +%Y%m%d-%H%M%S)"
 APP_PID=""
 
-if [[ -z "${MAVEN_CMD:-}" ]]; then
-  if [[ -x "./mvnw" ]]; then MAVEN_CMD="./mvnw"; else MAVEN_CMD="mvn"; fi
-fi
+MAVEN_CMD="$(g1_select_maven)"
 
 cleanup() {
-  if [[ -n "$APP_PID" ]] && kill -0 "$APP_PID" 2>/dev/null; then
-    kill -TERM "$APP_PID" 2>/dev/null || true
-    for _ in $(seq 1 20); do
-      kill -0 "$APP_PID" 2>/dev/null || break
-      sleep 1
-    done
-    kill -KILL "$APP_PID" 2>/dev/null || true
-    wait "$APP_PID" 2>/dev/null || true
-  fi
+  g1_stop_app "$APP_PID"
+  APP_PID=""
 }
 trap cleanup EXIT INT TERM
 
@@ -61,15 +56,6 @@ fi
 mkdir -p "$OUT"
 SUMMARY="$OUT/summary.tsv"
 printf 'profile\theap_gb\tregion_mb\tgc_delta\tobserved\tmax_pause_ms\n' > "$SUMMARY"
-
-wait_ready() {
-  for _ in $(seq 1 60); do
-    if curl -fsS "http://127.0.0.1:$PORT/actuator/health" >/dev/null 2>&1; then return 0; fi
-    if ! kill -0 "$APP_PID" 2>/dev/null; then return 1; fi
-    sleep 1
-  done
-  return 1
-}
 
 scenario_body() {
   case "$SCENARIO" in
@@ -87,7 +73,7 @@ run_profile() {
   PROFILE="$profile" SERVER_PORT="$PORT" LOG_DIR="$dir/logs" SKIP_BUILD=1 \
     ./scripts/run.sh > "$dir/app.log" 2>&1 &
   APP_PID=$!
-  if ! wait_ready; then
+  if ! g1_wait_ready "$PORT" 60 "$APP_PID"; then
     echo "Profile $profile failed to start. See $dir/app.log" >&2
     tail -40 "$dir/app.log" >&2 || true
     return 1
@@ -116,19 +102,16 @@ run_profile() {
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$profile" "$heap_mb" "$region_mb" "$gc_delta" "$observed" "${max_pause:-n/a}" >> "$SUMMARY"
 
-  kill -TERM "$APP_PID" 2>/dev/null || true
-  for _ in $(seq 1 20); do
-    kill -0 "$APP_PID" 2>/dev/null || break
-    sleep 1
-  done
-  kill -KILL "$APP_PID" 2>/dev/null || true
-  wait "$APP_PID" 2>/dev/null || true
+  g1_stop_app "$APP_PID"
   APP_PID=""
   echo "  saved: $dir"
 }
 
 for profile in $PROFILES; do
-  run_profile "$profile"
+  # 单个 profile 失败不终止整个实验：跳过并在汇总中留空，其余 profile 继续。
+  if ! run_profile "$profile"; then
+    echo "  profile $profile 失败，已跳过（其余 profile 继续）。" >&2
+  fi
 done
 
 echo

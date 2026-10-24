@@ -15,6 +15,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# 共享函数库（g1_select_maven 等），见 scripts/_common.sh。
+# shellcheck source=scripts/_common.sh
+source "$ROOT/scripts/_common.sh"
+
 # ---------------------------------------------------------------------------
 # 可选的命令行参数。与前置环境变量等价且优先级更高：
 #   ./scripts/run.sh --heap 1536m --profile low-latency --skip-build
@@ -84,125 +88,10 @@ if [[ -z "${HEAP:-}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 堆输入校验：语法、下限、与物理内存的关系。拒绝明显错误，风险值给警告。
+# Profile 决策提前：low-latency/throughput 在未显式指定堆时隐式切 4g，
+# humongous 会注入 REGION_SIZE=4m——先定案 HEAP/REGION_SIZE，再做下面的
+# 校验与 ergonomics 预告，保证预告的就是实际启动的。
 # ---------------------------------------------------------------------------
-heap_to_mb() {
-  local num unit
-  [[ "$1" =~ ^([0-9]+)([kKmMgG]?)$ ]] || return 1
-  num="${BASH_REMATCH[1]}"
-  unit="$(printf '%s' "${BASH_REMATCH[2]}" | tr '[:upper:]' '[:lower:]')"
-  case "$unit" in
-    "") echo $(( (num + 1048575) / 1048576 )) ;;   # 无单位 = 字节
-    k)  echo $(( (num + 1023) / 1024 )) ;;
-    m)  echo "$num" ;;
-    g)  echo $(( num * 1024 )) ;;
-  esac
-}
-
-physical_mem_bytes() {
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    sysctl -n hw.memsize 2>/dev/null || echo 0
-  elif [[ -r /proc/meminfo ]]; then
-    awk '/^MemTotal/ {print $2 * 1024}' /proc/meminfo
-  else
-    echo 0
-  fi
-}
-
-HEAP_MB="$(heap_to_mb "$HEAP")" || {
-  echo "错误: HEAP=\"$HEAP\" 不是合法的堆大小。应为数字 + 可选单位 k/m/g，例如 512m、1536m、3g。" >&2
-  exit 1
-}
-if (( HEAP_MB < 512 )); then
-  echo "错误: 堆 ${HEAP}（${HEAP_MB}MB）过小，最低 512m；实验场景的默认量级在此堆下无法产生可观察现象。" >&2
-  exit 1
-fi
-if (( HEAP_MB < 1024 )); then
-  echo "警告: 堆 ${HEAP_MB}MB 小于 1G，部分场景的默认下限（floor）可能触发安全 guard 的 400 拒绝；可调小场景参数后重试。" >&2
-fi
-PHYS_BYTES="$(physical_mem_bytes)"
-if (( PHYS_BYTES > 0 && HEAP_MB * 1048576 > PHYS_BYTES / 2 )); then
-  if (( HEAP_MB * 1048576 > PHYS_BYTES )); then
-    echo "警告: 堆 $HEAP 超过本机物理内存 $(awk -v b="$PHYS_BYTES" 'BEGIN{printf "%.0fG", b/1073741824}')，几乎必然导致 swap/启动失败。" >&2
-  else
-    echo "警告: 堆 $HEAP 超过本机物理内存 $(awk -v b="$PHYS_BYTES" 'BEGIN{printf "%.0fG", b/1073741824}') 的一半，GC 复制/实验峰值可能挤压系统。" >&2
-  fi
-fi
-
-# ---------------------------------------------------------------------------
-# G1 ergonomics 预告：region = 堆/2048 向上取 2 的幂，夹在 [1M, 32M]；
-# Humongous 阈值 = region/2。显式 REGION_SIZE 时 ergonomics 被覆盖。
-# ---------------------------------------------------------------------------
-human_bytes() {
-  if (( $1 % 1048576 == 0 )); then echo "$(( $1 / 1048576 ))M"
-  else echo "$(( $1 / 1024 ))K"
-  fi
-}
-
-if [[ "$REGION_SIZE" != "auto" ]]; then
-  echo "Region: 已强制 G1HeapRegionSize=$REGION_SIZE（对照实验；以下 ergonomics 预告不适用）"
-else
-  HEAP_BYTES=$(( HEAP_MB * 1048576 ))
-  REGION_BYTES=1048576
-  AVG_REGION=$(( HEAP_BYTES / 2048 ))
-  while (( REGION_BYTES < AVG_REGION )); do REGION_BYTES=$(( REGION_BYTES * 2 )); done
-  (( REGION_BYTES > 33554432 )) && REGION_BYTES=33554432
-  echo "堆 ${HEAP}（${HEAP_MB}MB）· 来源：$HEAP_SOURCE"
-  echo "预期 G1 ergonomics：Region $(human_bytes "$REGION_BYTES") × $(( HEAP_BYTES / REGION_BYTES ))，Humongous 阈值约 $(human_bytes $(( REGION_BYTES / 2 )))（实际以 /api/config 与启动日志为准）"
-fi
-
-LOG_DIR="${LOG_DIR:-$ROOT/logs}"
-JAVA_BIN="${JAVA_BIN:-${JAVA_HOME:+$JAVA_HOME/bin/}java}"
-JAVA_BIN="${JAVA_BIN:-java}"
-JAR="$(ls -1 "$ROOT"/target/g1-gc-lab-*.jar 2>/dev/null | grep -v '\.original$' | head -1 || true)"
-
-if [[ ! -x "$JAVA_BIN" ]] && ! command -v "$JAVA_BIN" >/dev/null 2>&1; then
-  echo "Java not found: $JAVA_BIN" >&2
-  exit 1
-fi
-
-# GC 日志格式与 experimental flag 都以 JDK 21 为准；先校验再启动，避免编译期才报错。
-java_major() {
-  "$1" -version 2>&1 | awk -F'"' '/version "/ {print $2}' | awk -F'[._]' '{print ($1==1)?$2:$1}'
-}
-require_java21() {
-  local bin="$1" label="$2" major
-  major="$(java_major "$bin" || true)"
-  if [[ -z "$major" || "$major" -lt 21 ]]; then
-    echo "需要 JDK 21+（$label），当前:" >&2
-    "$bin" -version 2>&1 | head -1 >&2 || true
-    exit 1
-  fi
-}
-require_java21 "$JAVA_BIN" "运行应用"
-if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/java" && "$JAVA_HOME/bin/java" != "$JAVA_BIN" ]]; then
-  require_java21 "$JAVA_HOME/bin/java" "JAVA_HOME（Maven 编译）"
-fi
-
-mkdir -p "$LOG_DIR"
-
-if [[ "${SKIP_BUILD:-0}" != "1" || -z "${JAR}" ]]; then
-  if [[ -n "${MAVEN_CMD:-}" ]]; then
-    MVN="$MAVEN_CMD"
-  elif [[ -x "./mvnw" ]]; then
-    MVN="./mvnw"
-  else
-    MVN="mvn"
-  fi
-  MVN_ARGS=(-q -DskipTests package)
-  if [[ -n "${MVN_REPO:-}" ]]; then
-    MVN_ARGS+=("-Dmaven.repo.local=$MVN_REPO")
-  fi
-  echo "Building g1-gc-lab ..."
-  "$MVN" "${MVN_ARGS[@]}"
-  JAR="$(ls -1 "$ROOT"/target/g1-gc-lab-*.jar 2>/dev/null | grep -v '\.original$' | head -1 || true)"
-fi
-
-if [[ -z "${JAR}" ]]; then
-  echo "Could not find target/g1-gc-lab-*.jar" >&2
-  exit 1
-fi
-
 PAUSE_MS=100
 IHOP=30
 NEW_MIN=10
@@ -259,6 +148,147 @@ case "$PROFILE" in
     exit 1
     ;;
 esac
+
+# region 强制值的校验：必须是 2 的幂且在 [1M, 32M]（JVM 的硬约束，提前友好报错）。
+# size_to_mb 是通用的“JVM 大小字符串 → MB”解析（堆与 region 共用）。
+size_to_mb() {
+  local num unit
+  [[ "$1" =~ ^([0-9]+)([kKmMgG]?)$ ]] || return 1
+  num="${BASH_REMATCH[1]}"
+  unit="$(printf '%s' "${BASH_REMATCH[2]}" | tr '[:upper:]' '[:lower:]')"
+  case "$unit" in
+    "") echo $(( (num + 1048575) / 1048576 )) ;;
+    k)  echo $(( (num + 1023) / 1024 )) ;;
+    m)  echo "$num" ;;
+    g)  echo $(( num * 1024 )) ;;
+  esac
+}
+if [[ "$REGION_SIZE" != "auto" ]]; then
+  REGION_MB="$(size_to_mb "$REGION_SIZE")" || {
+    echo "错误: REGION_SIZE=\"$REGION_SIZE\" 不是合法大小（应为数字 + k/m/g 单位）。" >&2
+    exit 1
+  }
+  if (( REGION_MB < 1 || REGION_MB > 32 )); then
+    echo "错误: G1HeapRegionSize=$REGION_SIZE 超出 JVM 约束 [1m, 32m]。" >&2
+    exit 1
+  fi
+  if (( (REGION_MB & (REGION_MB - 1)) != 0 )); then
+    echo "错误: G1HeapRegionSize=$REGION_SIZE 必须是 2 的幂（1m/2m/4m/8m/16m/32m）。" >&2
+    exit 1
+  fi
+fi
+
+# 端口校验：非法端口让 Spring 报晦涩错误，不如提前拦截。
+if ! [[ "$SERVER_PORT" =~ ^[0-9]+$ ]] || (( SERVER_PORT < 1 || SERVER_PORT > 65535 )); then
+  echo "错误: 端口 \"$SERVER_PORT\" 不合法（应为 1~65535 的数字）。" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 堆输入校验：语法、下限、与物理内存的关系。拒绝明显错误，风险值给警告。
+# ---------------------------------------------------------------------------
+physical_mem_bytes() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    sysctl -n hw.memsize 2>/dev/null || echo 0
+  elif [[ -r /proc/meminfo ]]; then
+    awk '/^MemTotal/ {print $2 * 1024}' /proc/meminfo
+  else
+    echo 0
+  fi
+}
+
+HEAP_MB="$(size_to_mb "$HEAP")" || {
+  echo "错误: HEAP=\"$HEAP\" 不是合法的堆大小。应为数字 + 可选单位 k/m/g，例如 512m、1536m、3g。" >&2
+  exit 1
+}
+if (( HEAP_MB < 512 )); then
+  echo "错误: 堆 ${HEAP}（${HEAP_MB}MB）过小，最低 512m；实验场景的默认量级在此堆下无法产生可观察现象。" >&2
+  exit 1
+fi
+if (( HEAP_MB < 1024 )); then
+  echo "警告: 堆 ${HEAP_MB}MB 小于 1G，部分场景的默认下限（floor）可能触发安全 guard 的 400 拒绝；可调小场景参数后重试。" >&2
+fi
+PHYS_BYTES="$(physical_mem_bytes)"
+if (( PHYS_BYTES > 0 && HEAP_MB * 1048576 > PHYS_BYTES / 2 )); then
+  if (( HEAP_MB * 1048576 > PHYS_BYTES )); then
+    echo "警告: 堆 $HEAP 超过本机物理内存 $(awk -v b="$PHYS_BYTES" 'BEGIN{printf "%.0fG", b/1073741824}')，几乎必然导致 swap/启动失败。" >&2
+  else
+    echo "警告: 堆 $HEAP 超过本机物理内存 $(awk -v b="$PHYS_BYTES" 'BEGIN{printf "%.0fG", b/1073741824}') 的一半，GC 复制/实验峰值可能挤压系统。" >&2
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# G1 ergonomics 预告：region = 堆/2048 向上取 2 的幂，夹在 [1M, 32M]；
+# Humongous 阈值 = region/2。显式 REGION_SIZE 时 ergonomics 被覆盖。
+# ---------------------------------------------------------------------------
+human_bytes() {
+  if (( $1 % 1048576 == 0 )); then echo "$(( $1 / 1048576 ))M"
+  else echo "$(( $1 / 1024 ))K"
+  fi
+}
+
+if [[ "$REGION_SIZE" != "auto" ]]; then
+  echo "Region: 已强制 G1HeapRegionSize=$REGION_SIZE（对照实验；以下 ergonomics 预告不适用）"
+else
+  HEAP_BYTES=$(( HEAP_MB * 1048576 ))
+  REGION_BYTES=1048576
+  AVG_REGION=$(( HEAP_BYTES / 2048 ))
+  while (( REGION_BYTES < AVG_REGION )); do REGION_BYTES=$(( REGION_BYTES * 2 )); done
+  (( REGION_BYTES > 33554432 )) && REGION_BYTES=33554432
+  echo "堆 ${HEAP}（${HEAP_MB}MB）· 来源：$HEAP_SOURCE"
+  echo "预期 G1 ergonomics：Region $(human_bytes "$REGION_BYTES") × $(( HEAP_BYTES / REGION_BYTES ))，Humongous 阈值约 $(human_bytes $(( REGION_BYTES / 2 )))（实际以 /api/config 与启动日志为准）"
+fi
+
+LOG_DIR="${LOG_DIR:-$ROOT/logs}"
+JAVA_BIN="${JAVA_BIN:-${JAVA_HOME:+$JAVA_HOME/bin/}java}"
+JAVA_BIN="${JAVA_BIN:-java}"
+
+# jar 发现逻辑只此一处；build 前后都会调用。
+find_jar() {
+  ls -1 "$ROOT"/target/g1-gc-lab-*.jar 2>/dev/null | grep -v '\.original$' | head -1 || true
+}
+JAR="$(find_jar)"
+
+if [[ ! -x "$JAVA_BIN" ]] && ! command -v "$JAVA_BIN" >/dev/null 2>&1; then
+  echo "Java not found: $JAVA_BIN" >&2
+  exit 1
+fi
+
+# GC 日志格式与 experimental flag 都以 JDK 21 为准；先校验再启动，避免编译期才报错。
+java_major() {
+  "$1" -version 2>&1 | awk -F'"' '/version "/ {print $2}' | awk -F'[._]' '{print ($1==1)?$2:$1}'
+}
+require_java21() {
+  local bin="$1" label="$2" major
+  major="$(java_major "$bin" || true)"
+  if [[ -z "$major" || "$major" -lt 21 ]]; then
+    echo "需要 JDK 21+（$label），当前:" >&2
+    "$bin" -version 2>&1 | head -1 >&2 || true
+    exit 1
+  fi
+}
+require_java21 "$JAVA_BIN" "运行应用"
+if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/java" && "$JAVA_HOME/bin/java" != "$JAVA_BIN" ]]; then
+  require_java21 "$JAVA_HOME/bin/java" "JAVA_HOME（Maven 编译）"
+fi
+
+mkdir -p "$LOG_DIR"
+
+if [[ "${SKIP_BUILD:-0}" != "1" || -z "${JAR}" ]]; then
+  MVN="$(g1_select_maven)"
+  MVN_ARGS=(-q -DskipTests package)
+  if [[ -n "${MVN_REPO:-}" ]]; then
+    MVN_ARGS+=("-Dmaven.repo.local=$MVN_REPO")
+  fi
+  echo "Building g1-gc-lab ..."
+  "$MVN" "${MVN_ARGS[@]}"
+  JAR="$(find_jar)"
+fi
+
+if [[ -z "${JAR}" ]]; then
+  echo "Could not find target/g1-gc-lab-*.jar" >&2
+  exit 1
+fi
 
 # Common diagnostic logging: GC pauses, class unloading, string dedup and
 # safepoints are written to separate files so each one can be analyzed alone.

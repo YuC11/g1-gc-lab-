@@ -45,25 +45,36 @@ echo
 declare -i total_count=0
 declare -i total_bytes=0
 
-# 逐条删除：打印、统计大小、执行 rm。 Whitespaces are safe via -print0.
+# KB 数转人类可读，避免对同一文件调用两次 du。
+human_kb() {
+  local kb="$1"
+  if (( kb >= 1048576 )); then
+    awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}'
+  elif (( kb >= 1024 )); then
+    awk -v k="$kb" 'BEGIN{printf "%.1fM", k/1024}'
+  else
+    echo "${kb}K"
+  fi
+}
+
+# 逐条删除：打印、统计大小、执行 rm。路径含空格也安全（-print0）。
 collect_and_delete() {
   local label="$1"; shift
-  local found=0
-  local size_bytes count
+  local found=0 size_kb size_bytes
   while IFS= read -r -d '' path; do
     found=1
+    size_kb="$(du -sk "$path" 2>/dev/null | awk '{print $1}' || true)"
+    size_kb="${size_kb:-0}"
+    size_bytes=$(( size_kb * 1024 ))
     if [[ -d "$path" ]]; then
-      size_bytes="$(du -sk "$path" 2>/dev/null | awk '{print $1}')"
-      size_bytes=$(( size_bytes * 1024 ))
-      echo "  [dir ] $label: ${path#$ROOT/}"
+      echo "  [dir ] $label: ${path#$ROOT/} ($(human_kb "$size_kb"))"
       if [[ "$DRY_RUN" == "0" ]]; then rm -rf -- "$path"; fi
     else
-      size_bytes="$(stat -f%z "$path" 2>/dev/null || stat -c%s "$path" 2>/dev/null || echo 0)"
-      echo "  [file] $label: ${path#$ROOT/} ($(du -h "$path" 2>/dev/null | awk '{print $1}'))"
+      echo "  [file] $label: ${path#$ROOT/} ($(human_kb "$size_kb"))"
       if [[ "$DRY_RUN" == "0" ]]; then rm -f -- "$path"; fi
     fi
     total_count+=1
-    total_bytes+=$((${size_bytes:-0}))
+    total_bytes+=$size_bytes
   done < <(find "$@" -print0 2>/dev/null || true)
   if [[ "$found" == "0" ]]; then
     echo "  [ ok  ] $label: 无残留"
@@ -97,7 +108,8 @@ echo
 
 echo "临时目录与系统杂物："
 collect_and_delete "类卸载临时目录" "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'g1-class-unload-*'
-collect_and_delete ".DS_Store"      "$ROOT" -name '.DS_Store' -not -path '*/target/*'
+# .git 是版本库内部结构，不遍历（现在仓库已在 git 管理下）
+collect_and_delete ".DS_Store"      "$ROOT" -name '.DS_Store' -not -path '*/target/*' -not -path '*/.git/*'
 echo
 
 if [[ "$WIPE_TARGET" == "1" ]]; then

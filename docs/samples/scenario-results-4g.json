@@ -2,7 +2,7 @@
   {
     "scenario": "young-gc",
     "title": "Young GC：短命对象洪峰",
-    "elapsedMs": 66,
+    "elapsedMs": 63,
     "allocatedMb": 512,
     "retainedMb": 0,
     "gcCountBefore": 8,
@@ -26,7 +26,7 @@
   {
     "scenario": "humongous",
     "title": "Humongous：大对象与 Region 碎片",
-    "elapsedMs": 41,
+    "elapsedMs": 47,
     "allocatedMb": 416,
     "retainedMb": 32,
     "gcCountBefore": 9,
@@ -52,7 +52,7 @@
   {
     "scenario": "full-gc",
     "title": "Full GC：显式 System.gc()",
-    "elapsedMs": 357,
+    "elapsedMs": 355,
     "allocatedMb": 0,
     "retainedMb": 32,
     "gcCountBefore": 10,
@@ -79,7 +79,7 @@
   {
     "scenario": "reset",
     "title": "Reset：释放引用并复位",
-    "elapsedMs": 323,
+    "elapsedMs": 325,
     "allocatedMb": 0,
     "retainedMb": 0,
     "gcCountBefore": 11,

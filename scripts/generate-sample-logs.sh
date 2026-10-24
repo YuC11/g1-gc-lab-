@@ -10,53 +10,44 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# 共享函数库（g1_wait_ready / g1_stop_app），见 scripts/_common.sh。
+# shellcheck source=scripts/_common.sh
+source "$ROOT/scripts/_common.sh"
+
 PORT="${PORT:-18080}"
 LOG_DIR="$ROOT/logs"
 mkdir -p "$LOG_DIR" "$ROOT/docs/samples"
 
 APP_PID=""
 cleanup() {
-  if [[ -n "$APP_PID" ]] && kill -0 "$APP_PID" 2>/dev/null; then
-    kill -TERM "$APP_PID" 2>/dev/null || true
-    for _ in $(seq 1 20); do
-      kill -0 "$APP_PID" 2>/dev/null || break
-      sleep 1
-    done
-    kill -KILL "$APP_PID" 2>/dev/null || true
-    wait "$APP_PID" 2>/dev/null || true
-  fi
+  g1_stop_app "$APP_PID"
+  APP_PID=""
 }
 trap cleanup EXIT INT TERM
 
 wait_ready() {
-  for _ in $(seq 1 90); do
-    if curl -fsS "http://127.0.0.1:$PORT/actuator/health" >/dev/null 2>&1; then
-      return 0
-    fi
-    if ! kill -0 "$APP_PID" 2>/dev/null; then
-      echo "Application exited before becoming ready." >&2
-      return 1
-    fi
-    sleep 1
-  done
-  return 1
+  g1_wait_ready "$PORT" 90 "$APP_PID"
 }
 
 post() {
-  local name="$1"
-  local body
+  local name="$1" body
   if [[ $# -ge 2 ]]; then
     body="$2"
   else
     body='{}'
   fi
   echo "== $name"
-  curl -fsS --max-time 180 \
-    -H 'Content-Type: application/json' \
-    -X POST "http://127.0.0.1:$PORT/api/scenarios/$name/run" \
-    -d "$body" \
-    -o "$LOG_DIR/scenario-$name.json" \
-    -w "  HTTP %{http_code} in %{time_total}s\n"
+  # 场景失败时打印已落盘的响应体再退出，保证可诊断（响应保存在同名 json 里）。
+  if ! curl -fsS --max-time 180 \
+      -H 'Content-Type: application/json' \
+      -X POST "http://127.0.0.1:$PORT/api/scenarios/$name/run" \
+      -d "$body" \
+      -o "$LOG_DIR/scenario-$name.json" \
+      -w "  HTTP %{http_code} in %{time_total}s\n"; then
+    echo "场景 $name 执行失败，响应内容：" >&2
+    cat "$LOG_DIR/scenario-$name.json" >&2 2>/dev/null || echo "（无响应体）" >&2
+    exit 1
+  fi
   sleep 1
 }
 
@@ -74,19 +65,6 @@ start_app() {
     exit 1
   fi
   echo "Ready (pid=$APP_PID)"
-}
-
-stop_app() {
-  if [[ -n "$APP_PID" ]]; then
-    kill -TERM "$APP_PID" 2>/dev/null || true
-    for _ in $(seq 1 20); do
-      kill -0 "$APP_PID" 2>/dev/null || break
-      sleep 1
-    done
-    kill -KILL "$APP_PID" 2>/dev/null || true
-    wait "$APP_PID" 2>/dev/null || true
-    APP_PID=""
-  fi
 }
 
 extract_sample() {
@@ -131,22 +109,24 @@ append_side_samples() {
 
 snapshot_results() {
   local label="$1"
-  if command -v jq >/dev/null 2>&1; then
-    local -a scenarios
-    if [[ "$label" == "4g" ]]; then
-      scenarios=(young-gc humongous full-gc reset)
-    else
-      scenarios=(young-gc promotion mixed-gc humongous cross-region string-dedup allocation-storm full-gc class-unload reset)
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "提示: 未安装 jq，跳过 scenario-results-$label.json 汇总（可选产物）。"
+    return 0
+  fi
+  local -a scenarios
+  if [[ "$label" == "4g" ]]; then
+    scenarios=(young-gc humongous full-gc reset)
+  else
+    scenarios=(young-gc promotion mixed-gc humongous cross-region string-dedup allocation-storm full-gc class-unload reset)
+  fi
+  local files=()
+  for scenario in "${scenarios[@]}"; do
+    if [[ -f "$LOG_DIR/scenario-$scenario.json" ]]; then
+      files+=("$LOG_DIR/scenario-$scenario.json")
     fi
-    local files=()
-    for scenario in "${scenarios[@]}"; do
-      if [[ -f "$LOG_DIR/scenario-$scenario.json" ]]; then
-        files+=("$LOG_DIR/scenario-$scenario.json")
-      fi
-    done
-    if [[ ${#files[@]} -gt 0 ]]; then
-      jq -s '.' "${files[@]}" > "$ROOT/docs/samples/scenario-results-$label.json"
-    fi
+  done
+  if [[ ${#files[@]} -gt 0 ]]; then
+    jq -s '.' "${files[@]}" > "$ROOT/docs/samples/scenario-results-$label.json"
   fi
 }
 
@@ -164,9 +144,13 @@ post full-gc '{}'
 post class-unload '{}'
 post reset '{}'
 sleep 2
-stop_app
+g1_stop_app "$APP_PID"; APP_PID=""
 
-LATEST_2G="$(ls -1t "$LOG_DIR"/gc-*.log | head -1)"
+LATEST_2G="$(ls -1t "$LOG_DIR"/gc-*.log 2>/dev/null | head -1 || true)"
+if [[ -z "$LATEST_2G" ]]; then
+  echo "2G 运行结束但未找到 gc-*.log，无法提取样例。" >&2
+  exit 1
+fi
 echo "2G GC log: $LATEST_2G"
 extract_sample "$LATEST_2G" "$ROOT/docs/samples/gc-scenarios-2g.log"
 append_side_samples "$ROOT/docs/samples/gc-scenarios-2g.log"
@@ -178,9 +162,13 @@ post humongous '{}'
 post full-gc '{}'
 post reset '{}'
 sleep 2
-stop_app
+g1_stop_app "$APP_PID"; APP_PID=""
 
-LATEST_4G="$(ls -1t "$LOG_DIR"/gc-*.log | head -1)"
+LATEST_4G="$(ls -1t "$LOG_DIR"/gc-*.log 2>/dev/null | head -1 || true)"
+if [[ -z "$LATEST_4G" ]]; then
+  echo "4G 运行结束但未找到 gc-*.log，无法提取样例。" >&2
+  exit 1
+fi
 echo "4G GC log: $LATEST_4G"
 extract_sample "$LATEST_4G" "$ROOT/docs/samples/gc-scenarios-4g.log"
 snapshot_results 4g
