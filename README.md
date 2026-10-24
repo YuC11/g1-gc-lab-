@@ -1,6 +1,6 @@
 # G1 GC Lab · JDK 21
 
-一个以 **Spring Boot 3.5 + JDK 21 + G1** 为主题的教学实验项目：用真实 HTTP 请求触发不同 GC 场景，实时查看 JVM / 堆 / GC 参数与事件，并直接 tail JVM 生成的 unified GC 日志。
+一个以 **Spring Boot 3.5 + JDK 21 + G1** 为主题的教学实验项目：用真实 HTTP 请求触发不同 GC 场景，实时**解析** JVM 生成的 unified GC 日志——Region 转移、并发周期、阶段分解进入事件富字段，控制台以暂停时间线图、运行历史 A/B 对比与场景一手证据呈现，而不只是 tail 原始文本。
 
 > 默认堆 **2G**，但堆大小可以是**任意值**：`HEAP=1536m`、`HEAP=3g` 都行，启动脚本会校验输入并按公式预告该堆下的 Region 与 Humongous 阈值（见下文）。
 
@@ -8,7 +8,7 @@
 
 ## 这个项目能做什么
 
-- 9 个实验场景：Young、Promotion、Mixed、Humongous、Allocation Storm、Full GC、跨 Region 引用、String Dedup、Class Unload，以及一个 Reset。
+- 10 个场景（9 个实验 + reset）：Young、Promotion、Mixed、Humongous、Allocation Storm、Full GC、跨 Region 引用、String Dedup、Class Unload，以及一个 Reset。
 - 浏览器控制台：**GC 暂停时间线 SVG 图**（按类型着色 + 分类型统计）、GC 事件表、堆组成、G1 参数、retained 数据、GC 日志 tail。
 - **解析器 v2**：除 pause 汇总行外，还聚合 info 级的 Region 转移行（Eden/Survivor/Old/Humongous）、并发周期（Concurrent Mark Cycle / Scan Root Regions / Clear Claimed Marks / Cleanup for Next Mark）、暂停阶段分解（Pre/Evacuate/Post Evacuate Collection Set、Merge Heap Roots、Full GC Phase 1-4）、User/Sys/Real 并行度、Metaspace 变化；verbose 级额外提取自适应 IHOP、ergo 决策（如 `do not continue mixed GCs`）、tenuring 阈值、引用处理统计、Humongous Reclaimed、PLAB、卡表/refinement——全部进事件的 `regionTransitions/phases/cpu/metaspace/details` 字段。
 - **场景一手证据闭环**：string-dedup 响应直接返回 new/deduped/平均去重率；class-unload 响应返回实际卸载的类数量（来自 stringdedup / class-unload 侧日志）。
@@ -27,6 +27,9 @@
 # 2G（默认）
 ./mvnw clean package
 ./scripts/run.sh
+
+# 可先跑全量测试（63 个：解析器契约 / watcher 边界 / 参数校验 / API 集成）
+./mvnw test
 
 # 4G（环境变量前缀写法）
 HEAP=4g ./scripts/run.sh
@@ -63,14 +66,20 @@ REGION_SIZE=4m HEAP=2g ./scripts/run.sh
 ## 默认实验参数
 
 ```text
--Xms2g -Xmx2g
+-Xms$HEAP -Xmx$HEAP      # 堆可为任意合法值（数字+k/m/g），默认 2g
 -XX:+UseG1GC
 -XX:MaxGCPauseMillis=100
 -XX:InitiatingHeapOccupancyPercent=30
 -XX:MaxTenuringThreshold=3
 -XX:+UseStringDeduplication -XX:StringDeduplicationAgeThreshold=1
 -XX:+UnlockExperimentalVMOptions
+# 主日志 + 三个独立侧日志（class-unload / stringdedup / safepoint，可单独分析）
 -Xlog:gc*=info:file=logs/gc-%t.log:utctime,uptime,level,tags:filecount=10,filesize=20m
+-Xlog:class+unload=info:file=logs/class-unload-%t.log:...（装饰与轮转参数同上）
+-Xlog:stringdedup=info:file=logs/stringdedup-%t.log:...（同上）
+-Xlog:safepoint=info:file=logs/safepoint-%t.log:...（同上）
+-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=logs
+-XX:ErrorFile=logs/hs_err_pid%p.log
 ```
 
 其中 pause target、IHOP、tenuring、string dedup 都是为了让课堂演示更快出现相应现象，**不是 G1 的 JDK 默认值**。默认值见 [05-参数与调优顺序.md](docs/05-参数与调优顺序.md)。
@@ -93,24 +102,24 @@ Humongous 阈值 = region ÷ 2
 | 8G | 4M | 2048 | 约 2MB |
 | 12G | 8M | 1536 | 约 4MB |
 
-注意 6G/12G 这类”非整 2G 档”的堆：region 取 2 的幂会向上跳档（6G÷2048=3M→4M），Region 数反而少于 4G 堆——这正是 ergonomics 的非线性所在，本身就是实验素材。
+注意 6G/12G 这类“非整 2G 档”的堆：region 取 2 的幂会向上跳档（6G÷2048=3M→4M），Region 数反而少于 4G 堆——这正是 ergonomics 的非线性所在，本身就是实验素材。
 
-Region 大小不是”越大越好”，它直接改变 Humongous 门槛、RSet 粒度和碎片形态。
+Region 大小不是“越大越好”，它直接改变 Humongous 门槛、RSet 粒度和碎片形态。
 
 ## 场景
 
-| 场景 | 默认量级 | 主要观察 |
-|---|---|---|
-| `young-gc` | 约 1.2GB 短命分配 | `Pause Young (Normal)`、Eden 回收 |
-| `promotion` | 256MB retained + 512MB churn | Survivor / Old 增长、晋升 |
-| `mixed-gc` | 409MB dead + 204MB live + 压力 | Concurrent Start → Mark → Remark → Cleanup → Mixed |
-| `humongous` | 32 × 2MB（2G/1M region） | Humongous regions、H 碎片 |
-| `allocation-storm` | 4 线程 × 目标 10s | 连续 Young GC、暂停分布 |
-| `full-gc` | `System.gc()` | `Pause Full`、Phase 4: Compact heap |
-| `cross-region` | 25 万节点引用图 | Remembered Sets / Scanned Cards / refinement |
-| `string-dedup` | 3 万 × 512 字符 | String Deduplication（独立日志） |
-| `class-unload` | 500 个动态类 | class unload、Metaspace |
-| `reset` | 清空 retained | 复位实验环境 |
+| 场景 | 参数 | 默认量级（按堆比例推导，2G 下） | 主要观察 |
+|---|---|---|---|
+| `young-gc` | `totalMb` / `chunkKb` | 约 1.2GB 短命分配 | `Pause Young (Normal)`、Eden 回收 |
+| `promotion` | `retainedMb` / `churnMb` | 256MB retained + 512MB churn | Survivor / Old 增长、晋升 |
+| `mixed-gc` | `deadMb` / `liveMb` / `finalChurnMb` | 约 409 / 204 / 614MB | Concurrent Start → Mark → Remark → Cleanup → Mixed |
+| `humongous` | `count` / `objectMb` | 32 × 2MB（2G/1M region） | Humongous regions、H 碎片 |
+| `allocation-storm` | `threads` / `durationMs` / `chunkKb` | 4 线程 × 目标 10s | 连续 Young GC、暂停分布 |
+| `full-gc` | 无 | `System.gc()` | `Pause Full`、Phase 4: Compact heap |
+| `cross-region` | `count` / `churnMb` | 25 万节点引用图 | Remembered Sets / Scanned Cards / refinement |
+| `string-dedup` | `count` / `churnMb` | 3 万 × 512 字符 | 响应直接返回去重率一手证据（`dedupedCount`/`dedupAvgPercent`） |
+| `class-unload` | `count` | 500 个动态类 | 响应返回实际卸载数（`unloadedClasses`）、Metaspace 三点对照 |
+| `reset` | `?gc=true/false` | 清空 retained | 复位实验环境 |
 
 页面会按当前堆大小给出建议参数；所有场景串行执行，高风险按钮会在接口层再次检查。
 
@@ -131,6 +140,7 @@ curl -s http://127.0.0.1:8080/api/logs | jq .
 curl -s 'http://127.0.0.1:8080/api/logs/tail?name=gc-xxx.log&lines=100'
 curl -s -X POST http://127.0.0.1:8080/api/jfr/start -H 'Content-Type: application/json' -d '{"seconds":30}'
 curl -s http://127.0.0.1:8080/api/jfr/status | jq .
+curl -sOJ "http://127.0.0.1:8080/api/logs/download?name=jfr-xxx.jfr"   # 下载日志/JFR
 ```
 
 | 方法 | 路径 | 说明 |
@@ -151,6 +161,15 @@ curl -s http://127.0.0.1:8080/api/jfr/status | jq .
 
 接口绑定 `127.0.0.1`，默认没有鉴权，**不要暴露到公网**。
 
+## 生成日志样例
+
+```bash
+./scripts/generate-sample-logs.sh              # 加 CLEANUP=1 自动清除运行残留
+./scripts/analyze-gc-log.sh logs/gc-xxxx.log
+```
+
+第一条命令会启动 2G 实例跑完整场景，再启动 4G 实例做对比，并把裁剪后的真实日志写入 `docs/samples/`。完整日志在 `logs/`（已 gitignore）。
+
 ## 学习与调优
 
 ```bash
@@ -165,15 +184,6 @@ PROFILES="jdk-defaults low-latency" ./scripts/tuning-lab.sh young-gc
 ```
 
 A/B 结果写入 `reports/tuning-<timestamp>/`，不会修改 `docs/samples/`。
-
-## 生成日志样例
-
-```bash
-./scripts/generate-sample-logs.sh
-./scripts/analyze-gc-log.sh logs/gc-xxxx.log
-```
-
-第一条命令会启动 2G 实例跑完整场景，再启动 4G 实例做对比，并把裁剪后的真实日志写入 `docs/samples/`。完整日志在 `logs/`（已 gitignore）。
 
 ## 文档索引（11 篇，按学习思路排序）
 
@@ -235,11 +245,13 @@ src/main/java/com/example/gcdemo/
 └── config/      demo.* 配置
 
 scripts/
-├── run.sh                    启动、profile、JVM flags（含 JDK 21 预检）
+├── run.sh                    启动、profile、JVM flags（JDK 21 预检、堆校验、ergonomics 预告）
+├── _common.sh                共享函数库（Maven 选择 / 就绪等待 / 优雅停止）
 ├── analyze-gc-log.sh         暂停统计与异常关键字
 ├── generate-sample-logs.sh   2G/4G 实验与日志样例（CLEANUP=1 自动收尾）
 ├── tuning-lab.sh             多 profile 单变量 A/B 实验台
-└── cleanup.sh                结束清理：清除所有运行残留（logs/、reports/、.DS_Store、/tmp 临时目录）
+├── cleanup.sh                结束清理：清除所有运行残留（logs/、reports/、.DS_Store、/tmp 临时目录）
+└── heap.conf.example         固定默认堆的示例配置（复制为 scripts/heap.conf 生效）
 ```
 
 ## 实验结束后清理（必读）

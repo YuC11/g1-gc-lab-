@@ -272,22 +272,30 @@
 
     /**
      * 合并增量事件：按 seq 去重、插入表格顶部、喂给时间线图，只保留最近 150 行。
+     *
+     * 水位必须在批处理前快照、批处理后一次性推进：批内是降序排列，
+     * 若在循环内更新 lastSeq，第一个（最高 seq）事件就会让同批其余事件
+     * 全部命中 seq <= lastSeq 而被丢弃——每批只能渲染 1 个事件
+     * （v1 以来的潜伏 bug，批量历史加载时暴露）。
      */
     function mergeEvents(events) {
         if (!events || !events.length) return;
         const body = $("eventBody");
-        const placeholder = body.querySelector(".empty");
-        if (placeholder) placeholder.remove();
-        const sorted = [...events].sort((a, b) => b.seq - a.seq);
+        const placeholder = body.querySelector("tr .empty");
+        if (placeholder) placeholder.closest("tr").remove();
+        const batchMax = state.lastSeq;
+        const fresh = events
+                .filter(event => event.seq > batchMax)
+                .sort((a, b) => a.seq - b.seq);
+        if (!fresh.length) return;
         const fragment = document.createDocumentFragment();
-        for (const event of sorted) {
-            if (event.seq <= state.lastSeq) continue;
+        for (const event of fresh) {
             const wrapper = document.createElement("tbody");
             wrapper.innerHTML = eventRow(event);
             while (wrapper.firstChild) fragment.appendChild(wrapper.firstChild);
-            state.lastSeq = Math.max(state.lastSeq, event.seq);
             state.allEvents.unshift(event);
         }
+        state.lastSeq = fresh[fresh.length - 1].seq;
         body.prepend(fragment);
         while (body.children.length > 150) body.removeChild(body.lastElementChild);
         if (state.allEvents.length > 300) state.allEvents.length = 300;
