@@ -1,0 +1,4 @@
+# 复制为 scripts/heap.conf 即可固定默认堆（未设置 HEAP=... 或 --heap 时生效）。
+# 只支持一行：数字 + 可选单位 k/m/g，例如 512m、1536m、3g、8192m。
+# 删除该文件即回到内置默认 2g。任意堆下的 Region/Humongous 推导见 README。
+2g

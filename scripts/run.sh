@@ -6,16 +6,151 @@
 # into application.yml. Profiles intentionally override pause/tenuring/IHOP for
 # faster classroom demos; `jdk-defaults` keeps the JDK ergonomics instead.
 #
+# Heap can be any JVM size: HEAP=1536m env prefix, --heap 1536m flag, or a
+# persistent default in scripts/heap.conf (see usage via -h). The script
+# validates the input and previews the expected G1 region ergonomics.
+#
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# ---------------------------------------------------------------------------
+# 可选的命令行参数。与前置环境变量等价且优先级更高：
+#   ./scripts/run.sh --heap 1536m --profile low-latency --skip-build
+# 也可以沿用环境变量风格：HEAP=1536m PROFILE=low-latency ./scripts/run.sh
+# ---------------------------------------------------------------------------
+usage() {
+  cat <<'USAGE'
+用法: ./scripts/run.sh [选项]        （括号内为等价的环境变量写法）
+
+  --heap <大小>     堆大小，任意 JVM 值：512m / 1536m / 3g / 8192m（HEAP=）
+  --profile <名>    default | jdk-defaults | low-latency | throughput
+                    | humongous | verbose（PROFILE=）
+  --region <大小>   强制 G1HeapRegionSize 做对照实验，如 1m / 4m（REGION_SIZE=）
+  --port <端口>     服务端口，默认 8080（SERVER_PORT=）
+  --skip-build      复用 target/ 已构建的 jar（SKIP_BUILD=1）
+  -h, --help        显示本帮助
+
+默认堆优先级：--heap / HEAP 环境变量 > scripts/heap.conf > 2g。
+脚本会校验堆输入，并按 堆/2048 向上取 2 的幂（1M~32M）预告 Region 与
+Humongous 阈值；实际值以启动日志与 /api/config 为准。
+USAGE
+}
+
 HEAP_EXPLICIT="${HEAP:-}"
-HEAP="${HEAP:-2g}"
 REGION_SIZE="${REGION_SIZE:-auto}"
 PROFILE="${PROFILE:-default}"
 SERVER_PORT="${SERVER_PORT:-8080}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --heap)
+      [[ -n "${2:-}" && "$2" != -* ]] || { echo "错误: --heap 需要一个值（如 1536m、3g）" >&2; exit 1; }
+      HEAP="$2"; HEAP_EXPLICIT="$2"; shift 2 ;;
+    --profile)
+      [[ -n "${2:-}" && "$2" != -* ]] || { echo "错误: --profile 需要一个值" >&2; exit 1; }
+      PROFILE="$2"; shift 2 ;;
+    --region)
+      [[ -n "${2:-}" && "$2" != -* ]] || { echo "错误: --region 需要一个值（如 1m、4m）" >&2; exit 1; }
+      REGION_SIZE="$2"; shift 2 ;;
+    --port)
+      [[ -n "${2:-}" && "$2" != -* ]] || { echo "错误: --port 需要一个端口号" >&2; exit 1; }
+      SERVER_PORT="$2"; shift 2 ;;
+    --skip-build) SKIP_BUILD=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "未知参数: $1（-h 查看用法）" >&2; exit 1 ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# 默认堆：环境变量/参数 > scripts/heap.conf（一行，如 "4g"）> 2g。
+# GC 参数只能走 JVM 启动参数，不能进 application.yml；heap.conf 是"固定我常用堆"
+# 的唯一持久化入口。
+# ---------------------------------------------------------------------------
+HEAP_SOURCE="命令行/环境变量"
+if [[ -z "${HEAP:-}" ]]; then
+  HEAP_CONF_VALUE=""
+  if [[ -r "$ROOT/scripts/heap.conf" ]]; then
+    HEAP_CONF_VALUE="$(grep -E '^[0-9]+[kKmMgG]?$' "$ROOT/scripts/heap.conf" | head -1 || true)"
+  fi
+  if [[ -n "$HEAP_CONF_VALUE" ]]; then
+    HEAP="$HEAP_CONF_VALUE"
+    HEAP_SOURCE="scripts/heap.conf"
+  else
+    HEAP="2g"
+    HEAP_SOURCE="内置默认"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 堆输入校验：语法、下限、与物理内存的关系。拒绝明显错误，风险值给警告。
+# ---------------------------------------------------------------------------
+heap_to_mb() {
+  local num unit
+  [[ "$1" =~ ^([0-9]+)([kKmMgG]?)$ ]] || return 1
+  num="${BASH_REMATCH[1]}"
+  unit="$(printf '%s' "${BASH_REMATCH[2]}" | tr '[:upper:]' '[:lower:]')"
+  case "$unit" in
+    "") echo $(( (num + 1048575) / 1048576 )) ;;   # 无单位 = 字节
+    k)  echo $(( (num + 1023) / 1024 )) ;;
+    m)  echo "$num" ;;
+    g)  echo $(( num * 1024 )) ;;
+  esac
+}
+
+physical_mem_bytes() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    sysctl -n hw.memsize 2>/dev/null || echo 0
+  elif [[ -r /proc/meminfo ]]; then
+    awk '/^MemTotal/ {print $2 * 1024}' /proc/meminfo
+  else
+    echo 0
+  fi
+}
+
+HEAP_MB="$(heap_to_mb "$HEAP")" || {
+  echo "错误: HEAP=\"$HEAP\" 不是合法的堆大小。应为数字 + 可选单位 k/m/g，例如 512m、1536m、3g。" >&2
+  exit 1
+}
+if (( HEAP_MB < 512 )); then
+  echo "错误: 堆 ${HEAP}（${HEAP_MB}MB）过小，最低 512m；实验场景的默认量级在此堆下无法产生可观察现象。" >&2
+  exit 1
+fi
+if (( HEAP_MB < 1024 )); then
+  echo "警告: 堆 ${HEAP_MB}MB 小于 1G，部分场景的默认下限（floor）可能触发安全 guard 的 400 拒绝；可调小场景参数后重试。" >&2
+fi
+PHYS_BYTES="$(physical_mem_bytes)"
+if (( PHYS_BYTES > 0 && HEAP_MB * 1048576 > PHYS_BYTES / 2 )); then
+  if (( HEAP_MB * 1048576 > PHYS_BYTES )); then
+    echo "警告: 堆 $HEAP 超过本机物理内存 $(awk -v b="$PHYS_BYTES" 'BEGIN{printf "%.0fG", b/1073741824}')，几乎必然导致 swap/启动失败。" >&2
+  else
+    echo "警告: 堆 $HEAP 超过本机物理内存 $(awk -v b="$PHYS_BYTES" 'BEGIN{printf "%.0fG", b/1073741824}') 的一半，GC 复制/实验峰值可能挤压系统。" >&2
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# G1 ergonomics 预告：region = 堆/2048 向上取 2 的幂，夹在 [1M, 32M]；
+# Humongous 阈值 = region/2。显式 REGION_SIZE 时 ergonomics 被覆盖。
+# ---------------------------------------------------------------------------
+human_bytes() {
+  if (( $1 % 1048576 == 0 )); then echo "$(( $1 / 1048576 ))M"
+  else echo "$(( $1 / 1024 ))K"
+  fi
+}
+
+if [[ "$REGION_SIZE" != "auto" ]]; then
+  echo "Region: 已强制 G1HeapRegionSize=$REGION_SIZE（对照实验；以下 ergonomics 预告不适用）"
+else
+  HEAP_BYTES=$(( HEAP_MB * 1048576 ))
+  REGION_BYTES=1048576
+  AVG_REGION=$(( HEAP_BYTES / 2048 ))
+  while (( REGION_BYTES < AVG_REGION )); do REGION_BYTES=$(( REGION_BYTES * 2 )); done
+  (( REGION_BYTES > 33554432 )) && REGION_BYTES=33554432
+  echo "堆 ${HEAP}（${HEAP_MB}MB）· 来源：$HEAP_SOURCE"
+  echo "预期 G1 ergonomics：Region $(human_bytes "$REGION_BYTES") × $(( HEAP_BYTES / REGION_BYTES ))，Humongous 阈值约 $(human_bytes $(( REGION_BYTES / 2 )))（实际以 /api/config 与启动日志为准）"
+fi
+
 LOG_DIR="${LOG_DIR:-$ROOT/logs}"
 JAVA_BIN="${JAVA_BIN:-${JAVA_HOME:+$JAVA_HOME/bin/}java}"
 JAVA_BIN="${JAVA_BIN:-java}"

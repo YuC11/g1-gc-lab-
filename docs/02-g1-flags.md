@@ -170,3 +170,23 @@ EXTRA_JAVA_OPTS='-XX:+ExplicitGCInvokesConcurrent' ./scripts/run.sh
 3. **频繁 Full GC 就调大 IHOP**：先找原因，可能是显式 GC、H 碎片、存活集过大或堆不足。
 4. **Mixed 场景只保留活对象**：没有可回收 Old Region，Mixed 自然不出现。
 5. **忽略实验性参数的版本差异**：不同 JDK 小版本默认值/可用性可能变化，必须用 `PrintFlagsFinal` 验证。
+
+---
+
+## 堆大小与 Region 的推导公式（任意堆适用）
+
+`G1HeapRegionSize` 未显式设置时，G1 按以下规则自动推导（`run.sh` 启动横幅按同一公式预告，实际值以 `/api/config` 与启动日志 `Heap Region Size` 为准）：
+
+1. 目标 Region 数约为 **2048**（`TARGET_REGION_NUMBER`）：平均 region = 堆 ÷ 2048；
+2. 平均值**向上取整到 2 的幂**（region 必须是 2 的幂）；
+3. 夹在 **[1M, 32M]** 区间内；
+4. **Humongous 阈值 = region ÷ 2**（对象超过它即进入连续 H region）。
+
+因此堆并非线性映射：2G→1M、4G→2M、**6G→4M**（3M 向上跳到 4M，Region 数反而只有 1536）、12G→8M。做 Region 对照实验时，用 `REGION_SIZE=1m/2m/4m`（或 `--region`）强制覆盖，观察 Humongous 门槛与 RSet 粒度的变化。
+
+## 堆输入的校验与安全提示（scripts/run.sh）
+
+- 语法：数字 + 可选单位 `k/m/g`（无单位按字节）；非法值直接拒绝；
+- `< 512m` 拒绝启动（场景默认量级无法产生可观察现象）；`512m ~ 1g` 警告（部分场景 floor 可能触发 guard 400）；
+- 堆超过本机物理内存 50% 警告、超过 100% 强警告（几乎必然 swap）；
+- 默认堆优先级：`--heap` / `HEAP=` > `scripts/heap.conf` > 2g。

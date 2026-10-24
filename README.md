@@ -2,7 +2,7 @@
 
 一个以 **Spring Boot 3.5 + JDK 21 + G1** 为主题的教学实验项目：用真实 HTTP 请求触发不同 GC 场景，实时查看 JVM / 堆 / GC 参数与事件，并直接 tail JVM 生成的 unified GC 日志。
 
-> 默认堆 **2G**。可以随时用 `HEAP=4g` 切到 4G 观察 G1 ergonomics 如何改变 Region 大小。
+> 默认堆 **2G**，但堆大小可以是**任意值**：`HEAP=1536m`、`HEAP=3g` 都行，启动脚本会校验输入并按公式预告该堆下的 Region 与 Humongous 阈值（见下文）。
 
 ![G1 GC Lab 控制台](docs/samples/ui-console.png)
 
@@ -28,14 +28,18 @@
 ./mvnw clean package
 ./scripts/run.sh
 
-# 4G
+# 4G（环境变量前缀写法）
 HEAP=4g ./scripts/run.sh
+
+# 任意堆 + 参数后置写法（两种写法等价，参数优先级更高）
+./scripts/run.sh --heap 1536m --profile low-latency --skip-build
+./scripts/run.sh -h    # 查看全部选项
 
 # 打开控制台
 open http://127.0.0.1:8080
 ```
 
-`run.sh` 会打印完整的 Java 启动命令。GC 参数只能通过 JVM 启动参数传入，不能写在 `application.yml` 中。
+`run.sh` 会打印完整的 Java 启动命令。GC 参数只能通过 JVM 启动参数传入，不能写在 `application.yml` 中。**默认堆的优先级**：`--heap`/`HEAP` 环境变量 > `scripts/heap.conf`（复制 `scripts/heap.conf.example` 而来，可固定你的常用堆）> 内置 2g。脚本会拒绝非法值与 <512m 的堆，对小堆（<1G）和超过物理内存一半的堆给出警告。
 
 如果所在环境无法下载 Maven Wrapper，可显式使用本机 Maven：`MAVEN_CMD=mvn ./scripts/run.sh`。
 
@@ -71,14 +75,27 @@ REGION_SIZE=4m HEAP=2g ./scripts/run.sh
 
 其中 pause target、IHOP、tenuring、string dedup 都是为了让课堂演示更快出现相应现象，**不是 G1 的 JDK 默认值**。默认值见 [02-g1-flags.md](docs/02-g1-flags.md)。
 
-默认不设置 `G1HeapRegionSize`。本机实测：
+默认不设置 `G1HeapRegionSize`。Region 大小由公式推导（`run.sh` 启动时按此预告，实际值见 `/api/config`）：
+
+```text
+region = 堆大小 ÷ 2048，向上取整到 2 的幂，夹在 [1M, 32M]
+Humongous 阈值 = region ÷ 2
+```
+
+常用堆的对照（启动脚本对任意堆都会打印同样的预告）：
 
 | 堆 | 自动 Region 大小 | Region 数 | Humongous 阈值 |
 |---|---|---|---|
-| 2G | 1M | 2048 | 约 512KB |
+| 512m ~ 2G | 1M | 堆÷1M（512~2048） | 约 512KB |
+| 3G | 2M | 1536 | 约 1MB |
 | 4G | 2M | 2048 | 约 1MB |
+| 6G | 4M | 1536 | 约 2MB |
+| 8G | 4M | 2048 | 约 2MB |
+| 12G | 8M | 1536 | 约 4MB |
 
-Region 大小不是“越大越好”，它直接改变 Humongous 门槛、RSet 粒度和碎片形态。
+注意 6G/12G 这类”非整 2G 档”的堆：region 取 2 的幂会向上跳档（6G÷2048=3M→4M），Region 数反而少于 4G 堆——这正是 ergonomics 的非线性所在，本身就是实验素材。
+
+Region 大小不是”越大越好”，它直接改变 Humongous 门槛、RSet 粒度和碎片形态。
 
 ## 场景
 
