@@ -1,0 +1,574 @@
+# 从零复现手册
+
+> 目标：在一台有 JDK 21 的机器上，从源码构建并逐步复现本项目全部 2G/4G GC 场景、日志和样例分析。
+>
+> 建议按本文顺序执行。每个场景都会改变堆状态，前一个场景的 retained 数据可能影响后一个场景的表现。
+
+## 0. 前置条件
+
+| 项 | 要求 |
+|---|---|
+| JDK | 21（推荐 21.0.11） |
+| Maven | 3.9.x，或项目自带 Maven Wrapper |
+| 内存 | 至少 4GB 可用；4G 堆实验建议 8GB+ |
+| 端口 | 默认 8080，可被覆盖 |
+| 工具 | `curl`；可选 `jq` 便于查看 JSON |
+| 系统 | macOS/Linux；Windows 可使用 PowerShell/CMD 等价命令 |
+
+检查：
+
+```bash
+java -version
+mvn -version
+curl --version | head -1
+```
+
+如果 Maven Wrapper 首次下载受限，本项目所有命令都支持：
+
+```bash
+MAVEN_CMD=mvn ./scripts/run.sh
+```
+
+## 1. 进入项目
+
+```bash
+cd /Users/yc/Downloads/gc-demo
+pwd
+ls
+```
+
+应看到：
+
+```text
+README.md  docs  pom.xml  scripts  src  requests  mvnw  mvnw.cmd
+```
+
+## 2. 构建
+
+### 2.1 使用 Maven Wrapper（推荐）
+
+```bash
+./mvnw clean package
+```
+
+首次运行会下载 Maven 3.9.16 与依赖。完成后应有：
+
+```text
+target/g1-gc-lab-0.0.1-SNAPSHOT.jar
+```
+
+### 2.2 使用本机 Maven
+
+```bash
+mvn clean package
+```
+
+### 2.3 只跑测试
+
+```bash
+./mvnw test
+```
+
+或：
+
+```bash
+mvn test
+```
+
+预期：
+
+```text
+Tests run: 15, Failures: 0, Errors: 0, Skipped: 0
+```
+
+## 3. 启动 2G 实例
+
+```bash
+cd /Users/yc/Downloads/gc-demo
+MAVEN_CMD=mvn ./scripts/run.sh
+```
+
+说明：
+
+- 默认 `HEAP=2g`
+- 默认 `PROFILE=default`
+- 默认端口 8080
+- 脚本会打印完整 JVM 命令
+- 脚本会先构建（`SKIP_BUILD=1` 可跳过）
+- 应用绑定 `127.0.0.1`
+
+如果 8080 被占用：
+
+```bash
+SERVER_PORT=18080 MAVEN_CMD=mvn ./scripts/run.sh
+```
+
+以下示例统一使用 `http://127.0.0.1:8080`；如果改端口，请替换。
+
+### 3.1 确认 G1 与 Region
+
+另开一个终端：
+
+```bash
+curl -s http://127.0.0.1:8080/actuator/health | jq .
+curl -s http://127.0.0.1:8080/api/status | jq '{
+  java: .jvm.javaVersion,
+  regionMb: (.jvm.regionSizeBytes / 1048576),
+  regions: .jvm.regionCount,
+  humongousKb: (.jvm.humongousThresholdBytes / 1024),
+  heapMaxGb: (.heap.heapMax / 1073741824),
+  logAvailable: .logWatcher.available
+}'
+```
+
+预期类似：
+
+```json
+{
+  "java": "21.0.11",
+  "regionMb": 1,
+  "regions": 2048,
+  "humongousKb": 512,
+  "heapMaxGb": 2,
+  "logAvailable": true
+}
+```
+
+### 3.2 打开页面
+
+```bash
+open http://127.0.0.1:8080
+```
+
+页面应显示：
+
+- G1 在线
+- 2G 堆
+- 1M Region
+- 512KB Humongous 阈值
+- 最近的 GC 事件
+- 场景卡片
+- GC 日志 tail
+
+## 4. 按顺序执行场景
+
+下面每一步都给出请求、预期事件和日志观察点。可以点击页面，也可以使用 curl。
+
+> 每个请求最多可能分配数 GB 内存；不要并发执行。接口本身有互斥保护，冲突会返回 409。
+
+### 4.1 Young GC
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/scenarios/young-gc/run \
+  -H 'Content-Type: application/json' -d '{}' | jq
+```
+
+预期：
+
+- `observedEventTypes` 至少包含 `Young`
+- 日志出现 `Pause Young (Normal)` 或从 Mixed 开始的周期
+
+查看：
+
+```bash
+grep -E 'Pause Young' logs/gc-*.log | tail -5
+```
+
+### 4.2 Promotion
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/scenarios/promotion/run \
+  -H 'Content-Type: application/json' -d '{}' | jq
+```
+
+预期：
+
+- `Old 使用量` 明显增长
+- 响应 metrics 中 `oldAfterMb > oldBeforeMb + 8`
+
+查看：
+
+```bash
+grep -E 'Old regions|Survivor regions|Pause Young' logs/gc-*.log | tail -10
+```
+
+### 4.3 Mixed GC
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/scenarios/mixed-gc/run \
+  -H 'Content-Type: application/json' -d '{}' | jq
+```
+
+预期 `observedEventTypes` 同时包含：
+
+```text
+Concurrent Start
+Remark
+Cleanup
+Prepare Mixed
+Mixed
+```
+
+查看：
+
+```bash
+grep -E 'Pause Young \(Mixed\)|Concurrent Start|Pause Remark|Pause Cleanup' logs/gc-*.log | tail -15
+```
+
+如果响应 `mixedSeen:false`：
+
+1. 确认是在 `PROFILE=default` 或 `verbose` 下运行。
+2. 确认 `/api/status` 的 `logWatcher.available=true`。
+3. 先执行 reset，再重试。
+4. 查看 GC 日志是否已经出现 `Concurrent Start`/`Cleanup`；如果只出现 Cleanup 没有下一次 Young，说明还需要更多压力，这是正常边界，见 05 文档。
+
+### 4.4 Humongous
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/scenarios/humongous/run \
+  -H 'Content-Type: application/json' -d '{}' | jq
+```
+
+预期：
+
+- 响应显示 region 大小与 H 阈值
+- 日志 `Humongous regions` 发生变化
+
+查看：
+
+```bash
+grep -E 'Humongous regions|Pause Young' logs/gc-*.log | tail -10
+```
+
+### 4.5 Cross-Region / RSet
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/scenarios/cross-region/run \
+  -H 'Content-Type: application/json' -d '{}' | jq
+```
+
+预期：
+
+- 25 万节点被保留
+- 至少一次 Young/Mixed 回收
+- `PROFILE=verbose` 下可查 `gc,remset` / `gc,refine,stats`
+
+```bash
+grep -E 'Remembered Sets|Scanned Cards|gc,remset|gc,refine,stats' logs/gc-*.log | tail -15
+```
+
+### 4.6 String Dedup
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/scenarios/string-dedup/run \
+  -H 'Content-Type: application/json' -d '{}' | jq
+```
+
+预期：
+
+- `UseStringDeduplication=true`
+- 独立日志 `logs/stringdedup-*.log` 出现 `Concurrent String Deduplication`
+
+查看：
+
+```bash
+grep 'Concurrent String Deduplication' logs/stringdedup-*.log | tail -5
+```
+
+### 4.7 Allocation Storm
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/scenarios/allocation-storm/run \
+  -H 'Content-Type: application/json' \
+  -d '{"threads":4,"durationMs":8000,"chunkKb":256}' | jq
+```
+
+预期：
+
+- 多次 Young GC
+- 可能进入 Mixed
+- 单场景分配达到 3GB 上限时提前结束，响应会记录实际分配量
+
+### 4.8 Full GC
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/scenarios/full-gc/run \
+  -H 'Content-Type: application/json' -d '{}' | jq
+```
+
+预期：
+
+```text
+Pause Full (System.gc())
+Phase 4: Compact heap（verbose 可见）
+```
+
+验证：
+
+```bash
+grep -E 'Pause Full|Phase 4: Compact heap' logs/gc-*.log | tail -5
+```
+
+对比实验：
+
+```bash
+# 先停止当前实例，再用禁用显式 GC 启动
+EXTRA_JAVA_OPTS='-XX:+DisableExplicitGC' MAVEN_CMD=mvn ./scripts/run.sh
+# 再调用 full-gc，应得到提示而不是 Full GC
+
+# 或者
+EXTRA_JAVA_OPTS='-XX:+ExplicitGCInvokesConcurrent' MAVEN_CMD=mvn ./scripts/run.sh
+```
+
+### 4.9 Class Unload
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/scenarios/class-unload/run \
+  -H 'Content-Type: application/json' -d '{}' | jq
+```
+
+预期：
+
+- 加载 500 个动态类
+- Metaspace 先升后降
+- 独立日志出现 500 条 `unloading class`
+
+```bash
+grep -c 'unloading class' logs/class-unload-*.log
+grep 'unloading class' logs/class-unload-*.log | head -5
+```
+
+### 4.10 Reset
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/scenarios/reset | jq
+```
+
+预期：
+
+- retained 清零
+- 默认执行显式 GC
+- Full GC 事件
+
+## 5. 分析日志
+
+### 5.1 自动统计
+
+```bash
+./scripts/analyze-gc-log.sh logs/gc-XXXX.log
+```
+
+输出包含：
+
+- 按类型统计的暂停次数/平均/最大
+- 最长暂停原始行
+- Full GC 清单
+- Concurrent / Humongous / Failure 标记
+
+### 5.2 手工查询
+
+```bash
+# 暂停
+grep -E 'Pause (Young|Full|Remark|Cleanup)' logs/gc-*.log
+
+# Mixed
+grep 'Pause Young (Mixed)' logs/gc-*.log
+
+# 并发周期
+grep -E 'Concurrent (Mark|Start|Cleanup|Remark)' logs/gc-*.log
+
+# RSet
+grep -E 'Remembered Sets|Scanned Cards|gc,remset|gc,refine,stats' logs/gc-*.log
+
+# Humongous / 失败
+grep -E 'Humongous regions|To-space exhausted|Evacuation Failure' logs/gc-*.log
+
+# Class unload
+grep 'unloading class' logs/class-unload-*.log
+
+# String dedup
+grep 'Concurrent String Deduplication' logs/stringdedup-*.log
+```
+
+### 5.3 在线 tail
+
+```bash
+NAME=$(curl -s http://127.0.0.1:8080/api/logs | jq -r '.[0].name')
+curl -s "http://127.0.0.1:8080/api/logs/tail?name=$NAME&lines=100" | jq -r .content
+```
+
+## 6. 4G 对照
+
+先停止当前实例（Ctrl-C），再启动：
+
+```bash
+HEAP=4g MAVEN_CMD=mvn ./scripts/run.sh
+```
+
+确认：
+
+```bash
+curl -s http://127.0.0.1:8080/api/status | jq '{
+  regionMb: (.jvm.regionSizeBytes / 1048576),
+  regions: .jvm.regionCount,
+  humongousKb: (.jvm.humongousThresholdBytes / 1024),
+  heapMaxGb: (.heap.heapMax / 1073741824)
+}'
+```
+
+预期：
+
+```text
+regionMb: 2
+regions: 2048
+humongousKb: 1024
+heapMaxGb: 4
+```
+
+然后运行：
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/scenarios/young-gc/run \
+  -H 'Content-Type: application/json' -d '{}'
+curl -s -X POST http://127.0.0.1:8080/api/scenarios/humongous/run \
+  -H 'Content-Type: application/json' -d '{}'
+curl -s -X POST http://127.0.0.1:8080/api/scenarios/full-gc/run \
+  -H 'Content-Type: application/json' -d '{}'
+curl -s -X POST http://127.0.0.1:8080/api/scenarios/reset
+```
+
+查看 4G 日志：
+
+```bash
+./scripts/analyze-gc-log.sh logs/gc-XXXX.log
+```
+
+## 7. 一键生成真实样例
+
+先停止手动启动的实例，然后：
+
+```bash
+MAVEN_CMD=mvn ./scripts/generate-sample-logs.sh
+```
+
+该脚本会自行启动/停止 2G 和 4G 实例，生成：
+
+```text
+docs/samples/gc-scenarios-2g.log
+docs/samples/gc-scenarios-4g.log
+docs/samples/scenario-results-2g.json
+docs/samples/scenario-results-4g.json
+docs/samples/class-unload-2g.log
+docs/samples/stringdedup-2g.log
+docs/samples/safepoint-2g.log
+```
+
+以及 `logs/` 下的完整原始日志。
+
+## 8. 启动 profile 冒烟
+
+```bash
+# JDK 默认 ergonomics
+PROFILE=jdk-defaults MAVEN_CMD=mvn ./scripts/run.sh
+
+# 4G + 50ms pause target
+PROFILE=low-latency MAVEN_CMD=mvn ./scripts/run.sh
+
+# 4G + 500ms pause target
+PROFILE=throughput MAVEN_CMD=mvn ./scripts/run.sh
+
+# 2G + 4M Region
+PROFILE=humongous MAVEN_CMD=mvn ./scripts/run.sh
+
+# gc*=debug
+PROFILE=verbose MAVEN_CMD=mvn ./scripts/run.sh
+```
+
+每次启动后：
+
+```bash
+curl -s http://127.0.0.1:8080/actuator/health
+curl -s http://127.0.0.1:8080/api/status | jq '.jvm.regionSizeBytes, .heap.heapMax'
+```
+
+## 9. 验收清单
+
+- [ ] `./mvnw test` 或 `mvn test`：15 tests 通过
+- [ ] `/actuator/health` 返回 UP
+- [ ] `/api/status` 显示 JDK 21、G1、正确堆/Region
+- [ ] `/api/scenarios` 返回 10 个实现
+- [ ] Young 场景产生 Young 事件
+- [ ] Mixed 场景产生 Mixed 事件
+- [ ] Full GC 场景产生 `Pause Full`
+- [ ] Humongous 日志出现 `Humongous regions`
+- [ ] String dedup 独立日志有去重记录
+- [ ] Class unload 独立日志有 `unloading class`
+- [ ] `/api/logs/tail` 可以读取日志
+- [ ] 4G 启动后 Region 变为 2M
+- [ ] `docs/samples/` 中日志和结果快照存在
+- [ ] `./scripts/analyze-gc-log.sh` 能输出暂停统计
+
+## 10. 停止与清理
+
+停止：
+
+```text
+Ctrl-C
+```
+
+清理运行日志（不会删除文档样例）：
+
+```bash
+rm -rf logs
+```
+
+重新生成：
+
+```bash
+MAVEN_CMD=mvn ./scripts/generate-sample-logs.sh
+```
+
+## 11. 学习与调优复现
+
+学 G1：
+
+```bash
+open docs/10-g1-learning-path.md
+open docs/11-g1-tuning-workshop.md
+```
+
+做调优 A/B：
+
+```bash
+./scripts/tuning-lab.sh allocation-storm
+PROFILES="jdk-defaults low-latency" ./scripts/tuning-lab.sh young-gc
+```
+
+输出：
+
+```text
+reports/tuning-<timestamp>/
+├── summary.tsv
+└── <profile>/
+    ├── app.log
+    ├── result.json
+    ├── config.json
+    ├── gc.log
+    └── analysis.txt
+```
+
+使用 [11-g1-tuning-workshop.md](11-g1-tuning-workshop.md) 的记录模板和决策树解读。
+
+## 12. 常见问题
+
+| 问题 | 处理 |
+|---|---|
+| 8080 被占用 | `SERVER_PORT=18080 ./scripts/run.sh`，后续 curl 改端口 |
+| Maven Wrapper 下载失败 | `MAVEN_CMD=mvn ./scripts/run.sh` |
+| 页面没有日志 | 必须使用 `run.sh` 启动并传入 `-Xlog`；单独 `java -jar` 不会生成日志文件 |
+| Mixed 偶尔不出现 | 先 reset，再按 4.3 检查 Cleanup 后是否有下一次 Young；这是 G1 的正常时序边界 |
+| Full GC 没发生 | 检查 `DisableExplicitGC` / `ExplicitGCInvokesConcurrent` |
+| 4G 机器内存不足 | 使用 `HEAP=2g`，或减少场景参数 |
+| 日志 tail 返回 400 | 只允许读取 `logs/` 下的 `.log` basename |
+| 场景 409 | 另一个场景正在运行，等待完成 |
+| 场景 400 | 参数超过 guard 上限或请求体格式错误 |

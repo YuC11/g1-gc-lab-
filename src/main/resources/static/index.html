@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>G1 GC Lab · JDK 21</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="hero">
+    <div class="hero-copy">
+        <div class="eyebrow">JDK 21 · SPRING BOOT · GARBAGE FIRST</div>
+        <h1>G1 GC <span>Lab</span></h1>
+        <p>从 Region、RSet、SATB 到 Mixed / Full GC，用真实请求和真实 GC 日志观察 G1。</p>
+        <div class="hero-actions">
+            <span id="connection" class="pill pill-muted">连接中</span>
+            <button id="resetBtn" class="button button-ghost" type="button">释放引用并复位</button>
+        </div>
+    </div>
+    <div class="heap-ring-wrap">
+        <div id="heapRing" class="heap-ring" style="--used: 0">
+            <div class="heap-ring-inner">
+                <strong id="heapPercent">--%</strong>
+                <span>heap used</span>
+            </div>
+        </div>
+        <div class="heap-ring-meta">
+            <span id="heapUsed">--</span>
+            <small id="heapMax">max --</small>
+        </div>
+    </div>
+</header>
+
+<main class="layout">
+    <section class="stats-grid">
+        <article class="stat-card">
+            <span class="stat-label">GC 次数</span>
+            <strong id="gcCount">--</strong>
+            <small id="gcSplit">Young -- / Full --</small>
+        </article>
+        <article class="stat-card">
+            <span class="stat-label">累计停顿</span>
+            <strong id="gcTime">--</strong>
+            <small id="gcOverhead">overhead --</small>
+        </article>
+        <article class="stat-card">
+            <span class="stat-label">最近暂停</span>
+            <strong id="lastPause">--</strong>
+            <small id="lastType">等待 GC 事件</small>
+        </article>
+        <article class="stat-card">
+            <span class="stat-label">Retained Demo</span>
+            <strong id="retained">--</strong>
+            <small id="retainedKeys">无强引用实验数据</small>
+        </article>
+    </section>
+
+    <section class="panel config-panel">
+        <div class="panel-head">
+            <div>
+                <span class="eyebrow">ERGONOMICS</span>
+                <h2>当前 JVM 与 G1 参数</h2>
+            </div>
+            <span id="logSource" class="pill pill-muted">日志源检测中</span>
+        </div>
+        <div id="jvmSummary" class="jvm-summary">正在读取 JVM 信息…</div>
+        <div id="flagList" class="flag-list"></div>
+        <div class="heap-pools">
+            <div class="pool-row"><span>Eden</span><div class="pool-track"><i id="edenBar"></i></div><small id="edenText">--</small></div>
+            <div class="pool-row"><span>Survivor</span><div class="pool-track"><i id="survivorBar"></i></div><small id="survivorText">--</small></div>
+            <div class="pool-row"><span>Old</span><div class="pool-track"><i id="oldBar"></i></div><small id="oldText">--</small></div>
+            <div class="pool-row"><span>Metaspace</span><div class="pool-track"><i id="metaBar"></i></div><small id="metaText">--</small></div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-head">
+            <div>
+                <span class="eyebrow">SCENARIOS</span>
+                <h2>九个请求场景</h2>
+                <p class="panel-sub">场景串行执行，参数会按当前堆大小给出建议值。高风险操作会触发 STW。</p>
+            </div>
+            <span id="scenarioState" class="pill pill-muted">空闲</span>
+        </div>
+        <div id="scenarioProgress" class="scenario-progress hidden">
+            <div class="progress-track"><i id="progressBar"></i></div>
+            <span id="progressText">准备中…</span>
+            <button id="cancelBtn" class="button button-danger" type="button">取消</button>
+        </div>
+        <div id="scenarioGrid" class="scenario-grid">
+            <div class="loading">正在加载场景…</div>
+        </div>
+    </section>
+
+    <section class="panel history-panel">
+        <div class="panel-head">
+            <div>
+                <span class="eyebrow">RUN HISTORY</span>
+                <h2>运行历史与 A/B 对比</h2>
+                <p class="panel-sub">勾选两条运行记录做单变量对比：固定 workload，只比较你改动的那个指标。</p>
+            </div>
+            <button id="compareBtn" class="button button-ghost" type="button" disabled>对比选中 (0/2)</button>
+        </div>
+        <div class="table-scroll history-scroll">
+            <table>
+                <thead>
+                <tr><th></th><th>时间</th><th>场景</th><th>耗时</th><th>GC Δ</th><th>分配</th><th>观测事件</th><th>状态</th></tr>
+                </thead>
+                <tbody id="historyBody">
+                <tr><td colspan="8" class="empty">还没有运行记录。</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div id="compareBox" class="compare-box hidden"></div>
+    </section>
+
+    <section class="panel learning-panel">
+        <div class="panel-head">
+            <div>
+                <span class="eyebrow">LEARNING PATH</span>
+                <h2>如何真正学会 G1 与调优</h2>
+                <p class="panel-sub">先预测，再看日志，最后用单变量 A/B 实验验证。完整路线见 docs/10，调优工作坊见 docs/11。</p>
+            </div>
+            <span class="pill pill-muted">观察 → 假设 → 实验</span>
+        </div>
+        <div class="learning-steps">
+            <article class="learning-step">
+                <span class="step-index">01</span>
+                <h3>建立 Region 直觉</h3>
+                <p>先比较 2G/4G 的 Region 大小、数量和 Humongous 阈值，再解释为什么。</p>
+                <code>HEAP=4g ./scripts/run.sh</code>
+            </article>
+            <article class="learning-step">
+                <span class="step-index">02</span>
+                <h3>观察 Young 与分配率</h3>
+                <p>运行 young-gc / allocation-storm，比较 GC 次数、Eden 和 pause 分布。</p>
+                <code>analyze-gc-log.sh logs/gc-*.log</code>
+            </article>
+            <article class="learning-step">
+                <span class="step-index">03</span>
+                <h3>追踪晋升与 Old</h3>
+                <p>执行 promotion，记录 Survivor/Old 变化；再对比 jdk-defaults 的 tenuring。</p>
+                <code>PROFILE=jdk-defaults ./scripts/run.sh</code>
+            </article>
+            <article class="learning-step">
+                <span class="step-index">04</span>
+                <h3>理解 RSet 成本</h3>
+                <p>用 verbose 跑 cross-region，搜索 gc,remset 与 Scanned Cards。</p>
+                <code>PROFILE=verbose ./scripts/run.sh</code>
+            </article>
+            <article class="learning-step">
+                <span class="step-index">05</span>
+                <h3>还原 Mixed 周期</h3>
+                <p>找出 Concurrent Start → Remark → Cleanup → Mixed，标出 STW 与并发阶段。</p>
+                <code>mixed-gc + docs/09</code>
+            </article>
+            <article class="learning-step">
+                <span class="step-index">06</span>
+                <h3>做一次单变量调优</h3>
+                <p>固定 workload，只改 pause target 或 IHOP，比较 P99、GC 次数和 Full GC。</p>
+                <code>./scripts/tuning-lab.sh allocation-storm</code>
+            </article>
+        </div>
+        <div class="tuning-loop">
+            <span>基线</span><i>→</i><span>假设</span><i>→</i><span>只改一个变量</span><i>→</i><span>相同 workload 复测</span><i>→</i><span>记录决策</span>
+        </div>
+        <p class="learning-note">自测题、7 天学习安排和常见错误见 <strong>docs/10-g1-learning-path.md</strong>；参数对比实验、记录模板和决策树见 <strong>docs/11-g1-tuning-workshop.md</strong>。</p>
+    </section>
+
+    <section class="panel chart-panel">
+        <div class="panel-head">
+            <div>
+                <span class="eyebrow">PAUSE TIMELINE</span>
+                <h2>GC 暂停时间线</h2>
+                <p class="panel-sub">纵轴为暂停毫秒，颜色区分类型；并发周期阶段以横线显示在底部带。</p>
+            </div>
+            <div id="chartStats" class="chart-stats">等待事件…</div>
+        </div>
+        <div class="chart-wrap">
+            <svg id="pauseChart" viewBox="0 0 960 240" preserveAspectRatio="none" role="img"
+                 aria-label="GC 暂停时间线"></svg>
+            <div id="chartTip" class="chart-tip hidden"></div>
+        </div>
+        <div id="chartLegend" class="chart-legend"></div>
+    </section>
+
+    <section class="panel events-panel">
+        <div class="panel-head">
+            <div>
+                <span class="eyebrow">TIMELINE</span>
+                <h2>GC 事件时间线</h2>
+            </div>
+            <span class="pill pill-muted" id="eventSource">等待事件</span>
+        </div>
+        <div class="table-scroll">
+            <table>
+                <thead>
+                <tr><th>时间</th><th>类型</th><th>Cause</th><th>堆 before → after</th><th>Pause</th></tr>
+                </thead>
+                <tbody id="eventBody">
+                <tr><td colspan="5" class="empty">执行一个场景，或等待 G1 自然触发 GC。</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="panel log-panel">
+        <div class="panel-head">
+            <div>
+                <span class="eyebrow">UNIFIED LOGGING</span>
+                <h2>GC 日志 tail</h2>
+            </div>
+            <div class="log-controls">
+                <select id="logSelect" aria-label="选择日志文件"></select>
+                <button id="logRefresh" class="button button-ghost" type="button">刷新</button>
+            </div>
+        </div>
+        <pre id="logTail" class="log-tail">日志将在使用 scripts/run.sh 启动后出现。</pre>
+    </section>
+
+    <section class="panel jfr-panel">
+        <div class="panel-head">
+            <div>
+                <span class="eyebrow">JFR</span>
+                <h2>JFR 飞行记录</h2>
+                <p class="panel-sub">基于 JDK 内置 FlightRecorder（profile 配置，含 GC 事件）；落盘到 logs/，用 JDK Mission Control 打开。</p>
+            </div>
+            <span id="jfrState" class="pill pill-muted">未录制</span>
+        </div>
+        <div class="jfr-controls">
+            <label class="param">时长（秒）
+                <input type="number" id="jfrSeconds" value="60" min="1" max="300" step="1">
+            </label>
+            <button id="jfrStartBtn" class="button" type="button">开始录制</button>
+            <button id="jfrStopBtn" class="button button-ghost" type="button" disabled>停止并落盘</button>
+            <a id="jfrDownload" class="button button-ghost hidden" href="#">下载最近 .jfr</a>
+        </div>
+    </section>
+
+    <section class="panel knowledge-panel">
+        <div class="panel-head">
+            <div>
+                <span class="eyebrow">MENTAL MODEL</span>
+                <h2>G1 知识地图</h2>
+                <p class="panel-sub">完整参数、日志案例与调优手册见项目 docs/ 目录；G1 全流程与 Bitmap/TAMS/SATB 数据结构见 docs/12。</p>
+            </div>
+        </div>
+        <div class="knowledge-grid">
+            <article><h3>Region 化堆</h3><p>2G 堆默认 2048 × 1MB，4G 堆默认 2048 × 2MB。Region 在 Eden / Survivor / Old / Humongous / Free 间转换。</p></div>
+            <article><h3>RSet 与写屏障</h3><p>跨 Region 引用通过 card table、dirty card queue 和 refinement 线程维护；verbose 日志中可查看 gc,remset、Scanned Cards 与 gc,refine,stats。</p></div>
+            <article><h3>SATB 并发标记</h3><p>初始快照标记保证并发标记正确性；TAMS、mark bitmap、Remark 与 Cleanup 构成 space-reclamation 周期。</p></div>
+            <article><h3>Humongous</h3><p>对象大于 region 一半即进入连续 H region。2G/1M region 的阈值约 512KB，4G/2M region 约 1MB。</p></div>
+            <article><h3>Mixed GC</h3><p>并发标记完成后，G1 在年轻代回收中附加低存活率 old region，形成 Pause Young (Mixed) 与 CSet。</p></div>
+            <article><h3>Full GC 兜底</h3><p>晋升失败、H region 碎片或显式 System.gc() 可能退化为全堆压缩。生产环境应定位根因而非调大 IHOP。</p></div>
+        </div>
+    </section>
+</main>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script src="/app.js"></script>
+</body>
+</html>

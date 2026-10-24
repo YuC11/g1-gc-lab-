@@ -1,0 +1,277 @@
+[
+  {
+    "scenario": "young-gc",
+    "title": "Young GC：短命对象洪峰",
+    "elapsedMs": 56,
+    "allocatedMb": 274,
+    "retainedMb": 0,
+    "gcCountBefore": 8,
+    "gcCountAfter": 10,
+    "gcDelta": 2,
+    "observedEventTypes": [
+      "Young"
+    ],
+    "observations": [
+      "实际分配 274.8 MB",
+      "Young GC 次数增量 2"
+    ],
+    "hint": "查看日志中 Pause Young (Normal) 的 before->after 与 Eden regions 变化。",
+    "metrics": {
+      "totalMb": 1228,
+      "gcDelta": 2,
+      "chunkKb": 256
+    },
+    "cancelled": false
+  },
+  {
+    "scenario": "promotion",
+    "title": "Promotion：Survivor 与晋升",
+    "elapsedMs": 200,
+    "allocatedMb": 768,
+    "retainedMb": 256,
+    "gcCountBefore": 10,
+    "gcCountAfter": 11,
+    "gcDelta": 1,
+    "observedEventTypes": [
+      "Young"
+    ],
+    "observations": [
+      "保留对象约 256 MB",
+      "GC 次数增量 1",
+      "Old 使用量 16.7 MB -> 355.5 MB"
+    ],
+    "hint": "观察日志中 Survivor/Old regions 的变化，以及对象年龄阈值对晋升的影响。",
+    "metrics": {
+      "oldAfterMb": 355,
+      "oldBeforeMb": 16,
+      "retainedMb": 256,
+      "churnMb": 512,
+      "gcDelta": 1
+    },
+    "cancelled": false
+  },
+  {
+    "scenario": "mixed-gc",
+    "title": "Mixed GC：并发标记 + 混合回收",
+    "elapsedMs": 5281,
+    "allocatedMb": 2763,
+    "retainedMb": 204,
+    "gcCountBefore": 11,
+    "gcCountAfter": 23,
+    "gcDelta": 12,
+    "observedEventTypes": [
+      "Young",
+      "Concurrent",
+      "Concurrent Start",
+      "Remark",
+      "Cleanup",
+      "Prepare Mixed",
+      "Mixed"
+    ],
+    "observations": [
+      "将死批次 409 MB，压力分配 512 MB",
+      "存活批次 204 MB",
+      "追加分配 1.60 GB",
+      "Old 355.5 MB -> 912.9 MB",
+      "GC 次数增量 12",
+      "mixed 事件：false"
+    ],
+    "hint": "未观察到 Mixed：可增大追加压力、降低 IHOP，或确认日志 watcher 已生效；仅靠全存活对象不会产生可回收 old region。",
+    "metrics": {
+      "oldBeforeMb": 355,
+      "gcDelta": 12,
+      "liveMb": 204,
+      "deadMb": 409,
+      "mixedSeen": false,
+      "oldAfterMb": 912,
+      "promoteChurnMb": 512
+    },
+    "cancelled": false
+  },
+  {
+    "scenario": "humongous",
+    "title": "Humongous：大对象与 Region 碎片",
+    "elapsedMs": 25,
+    "allocatedMb": 339,
+    "retainedMb": 32,
+    "gcCountBefore": 23,
+    "gcCountAfter": 24,
+    "gcDelta": 1,
+    "observedEventTypes": [
+      "Mixed"
+    ],
+    "observations": [
+      "region 大小约 1 MB，H 阈值约 512.0 KB",
+      "分配 32 个 2 MB 大对象，保留 16 个",
+      "GC 次数增量 1"
+    ],
+    "hint": "查看日志中的 Humongous regions 与 Pause Cleanup；释放全部引用后运行 reset 观察 H region 回收。",
+    "metrics": {
+      "count": 32,
+      "gcDelta": 1,
+      "objectMb": 2,
+      "regionMb": 1
+    },
+    "cancelled": false
+  },
+  {
+    "scenario": "cross-region",
+    "title": "Cross-Region：RSet 与写屏障",
+    "elapsedMs": 43,
+    "allocatedMb": 409,
+    "retainedMb": 22,
+    "gcCountBefore": 24,
+    "gcCountAfter": 25,
+    "gcDelta": 1,
+    "observedEventTypes": [
+      "Mixed"
+    ],
+    "observations": [
+      "节点数 250000，估算 22.9 MB",
+      "跨 region 随机引用已建立",
+      "GC 次数增量 1"
+    ],
+    "hint": "用 PROFILE=verbose 启动，在日志中搜索 gc,remset / gc,refine,stats / Scanned Cards；RSet 越大，Young GC 的固定成本越高。",
+    "metrics": {
+      "churnMb": 409,
+      "gcDelta": 1,
+      "count": 250000
+    },
+    "cancelled": false
+  },
+  {
+    "scenario": "string-dedup",
+    "title": "String Dedup：字符串去重",
+    "elapsedMs": 8164,
+    "allocatedMb": 1264,
+    "retainedMb": 31,
+    "gcCountBefore": 25,
+    "gcCountAfter": 29,
+    "gcDelta": 4,
+    "observedEventTypes": [
+      "Concurrent",
+      "Concurrent Start",
+      "Young",
+      "Remark",
+      "Cleanup"
+    ],
+    "observations": [
+      "字符串 30000 个，每个 512 字符，估算 31.1 MB",
+      "UseStringDeduplication=true",
+      "GC 次数增量 4",
+      "本轮统计行尚未落盘（去重线程异步写出，实测可滞后数十秒）；稍后在 /api/status 的 sideLogs.stringDedup 或日志面板中查看"
+    ],
+    "hint": "查看 logs/stringdedup-*.log 中的 Concurrent String Deduplication 统计；去重发生在对象达到 StringDeduplicationAgeThreshold 后。",
+    "metrics": {
+      "gcDelta": 4,
+      "enabled": true,
+      "count": 30000
+    },
+    "cancelled": false
+  },
+  {
+    "scenario": "allocation-storm",
+    "title": "Allocation Storm：高分配率",
+    "elapsedMs": 67,
+    "allocatedMb": 3072,
+    "retainedMb": 31,
+    "gcCountBefore": 29,
+    "gcCountAfter": 35,
+    "gcDelta": 6,
+    "observedEventTypes": [
+      "Prepare Mixed",
+      "Mixed",
+      "Young"
+    ],
+    "observations": [
+      "线程 4，目标持续 6000ms，实际 48ms",
+      "分配约 3.00 GB（达到单场景分配上限）",
+      "GC 次数增量 6"
+    ],
+    "hint": "对比不同 MaxGCPauseMillis / 线程数下的暂停分布；高分配率会直接推高 Young GC 频率。",
+    "metrics": {
+      "gcDelta": 6,
+      "allocatedMb": 3072,
+      "durationMs": 6000,
+      "threads": 4
+    },
+    "cancelled": false
+  },
+  {
+    "scenario": "full-gc",
+    "title": "Full GC：显式 System.gc()",
+    "elapsedMs": 5154,
+    "allocatedMb": 0,
+    "retainedMb": 31,
+    "gcCountBefore": 35,
+    "gcCountAfter": 36,
+    "gcDelta": 1,
+    "observedEventTypes": [
+      "Full"
+    ],
+    "observations": [
+      "System.gc() 已调用",
+      "Full 事件：false",
+      "Old collector 次数 0 -> 1",
+      "GC 次数增量 1"
+    ],
+    "hint": "Pause Full 说明 G1 退化为全堆压缩；生产环境应优先排查 allocation failure 根因，而不是频繁触发 Full GC。",
+    "metrics": {
+      "explicitGcConcurrent": false,
+      "gcDelta": 1,
+      "explicitGcDisabled": false,
+      "fullSeen": false
+    },
+    "cancelled": false
+  },
+  {
+    "scenario": "class-unload",
+    "title": "Class Unload：类卸载与 Metaspace",
+    "elapsedMs": 2665,
+    "allocatedMb": 0,
+    "retainedMb": 31,
+    "gcCountBefore": 36,
+    "gcCountAfter": 38,
+    "gcDelta": 2,
+    "observedEventTypes": [
+      "Full"
+    ],
+    "observations": [
+      "动态加载 500 个嵌套类",
+      "Metaspace 41.0 MB -> 50.8 MB -> 50.0 MB",
+      "unloading class 行数增量 500（一手证据）"
+    ],
+    "hint": "已观测到 500 个类卸载；对照 class-unload 日志的 unloading 行与 Metaspace 回落。",
+    "metrics": {
+      "metaspaceLoadedMb": 50,
+      "unloadedClasses": 500,
+      "metaspaceBeforeMb": 41,
+      "count": 500,
+      "metaspaceAfterMb": 49
+    },
+    "cancelled": false
+  },
+  {
+    "scenario": "reset",
+    "title": "Reset：释放引用并复位",
+    "elapsedMs": 335,
+    "allocatedMb": 0,
+    "retainedMb": 0,
+    "gcCountBefore": 38,
+    "gcCountAfter": 39,
+    "gcDelta": 1,
+    "observedEventTypes": [
+      "Full"
+    ],
+    "observations": [
+      "retained 31.1 MB -> 0",
+      "显式 GC 已执行：true"
+    ],
+    "hint": "引用已经释放，但 Full GC 仍会压缩堆；观察日志中的 Pause Full 和堆回落。",
+    "metrics": {
+      "gcRan": true,
+      "retainedBeforeMb": 31
+    },
+    "cancelled": false
+  }
+]

@@ -1,0 +1,125 @@
+### G1 GC Lab API 示例（IntelliJ / VS Code REST Client 格式）
+###
+### 先启动应用：./scripts/run.sh   （或 HEAP=4g ./scripts/run.sh）
+### v2 参数契约：POST /run 的请求体是 {"参数名": 整数}，
+### 参数名与范围见 GET /api/scenarios（与场景 ParamSpec 一一对应），
+### 未知参数 / 越界值返回 400 并附可用参数提示。
+
+@baseUrl = http://127.0.0.1:8080
+
+### ---------- 状态与配置 ----------
+
+GET {{baseUrl}}/actuator/health
+
+### 聚合状态：JVM/堆/GC/retained/最近事件/日志源/场景进度/侧日志证据
+GET {{baseUrl}}/api/status
+
+### JVM 与 G1 配置
+GET {{baseUrl}}/api/config
+
+### 场景目录（参数名、默认值、min/max 都在这里）
+GET {{baseUrl}}/api/scenarios
+
+### 增量 GC 事件（事件含 regionTransitions/phases/cpu/metaspace/details 富字段）
+GET {{baseUrl}}/api/gc/events?afterSeq=0&limit=100
+
+### ---------- 场景执行（参数按场景命名） ----------
+
+### young-gc：totalMb / chunkKb
+POST {{baseUrl}}/api/scenarios/young-gc/run
+Content-Type: application/json
+
+{}
+
+### promotion：retainedMb / churnMb（v2 起按语义命名，旧 totalMb 不再接受）
+POST {{baseUrl}}/api/scenarios/promotion/run
+Content-Type: application/json
+
+{"retainedMb": 256, "churnMb": 512}
+
+### mixed-gc：deadMb / liveMb / finalChurnMb（旧 count 已废弃）
+POST {{baseUrl}}/api/scenarios/mixed-gc/run
+Content-Type: application/json
+
+{"deadMb": 409, "liveMb": 204, "finalChurnMb": 614}
+
+### humongous：count / objectMb
+POST {{baseUrl}}/api/scenarios/humongous/run
+Content-Type: application/json
+
+{"count": 32, "objectMb": 2}
+
+### allocation-storm：threads / durationMs / chunkKb
+POST {{baseUrl}}/api/scenarios/allocation-storm/run
+Content-Type: application/json
+
+{"threads": 4, "durationMs": 8000, "chunkKb": 256}
+
+### full-gc：无参数
+POST {{baseUrl}}/api/scenarios/full-gc/run
+Content-Type: application/json
+
+{}
+
+### cross-region：count / churnMb
+POST {{baseUrl}}/api/scenarios/cross-region/run
+Content-Type: application/json
+
+{}
+
+### string-dedup：count / churnMb（响应直接返回去重率一手证据）
+POST {{baseUrl}}/api/scenarios/string-dedup/run
+Content-Type: application/json
+
+{}
+
+### class-unload：count（响应返回实际卸载的类数量）
+POST {{baseUrl}}/api/scenarios/class-unload/run
+Content-Type: application/json
+
+{"count": 500}
+
+### 未知参数示例：返回 400 + 可用参数清单
+POST {{baseUrl}}/api/scenarios/young-gc/run
+Content-Type: application/json
+
+{"bogus": 1}
+
+### ---------- 取消 / 历史 ----------
+
+### 请求取消正在运行的场景（协作式：下一个检查点生效）
+POST {{baseUrl}}/api/scenarios/current/cancel
+
+### 最近 20 次运行（含已取消），最新在前；A/B 对比数据源
+GET {{baseUrl}}/api/scenarios/history
+
+### ---------- 日志 ----------
+
+### 日志/JFR 文件列表
+GET {{baseUrl}}/api/logs
+
+### 安全 tail（仅 .log；文件名必须是 logs/ 下的 basename）
+GET {{baseUrl}}/api/logs/tail?name=gc-2026-10-24_10-00-00.log&lines=100
+
+### 下载日志或 JFR 文件（.log / .jfr，同样的防路径穿越守卫）
+GET {{baseUrl}}/api/logs/download?name=jfr-20261024-100000.jfr
+
+### ---------- JFR 飞行记录 ----------
+
+### 开始录制（seconds 可省略，默认 60，上限 demo.max-jfr-seconds=300）
+POST {{baseUrl}}/api/jfr/start
+Content-Type: application/json
+
+{"seconds": 30}
+
+### 录制状态（active/剩余秒/最近落盘文件）
+GET {{baseUrl}}/api/jfr/status
+
+### 停止并落盘到 logs/jfr-*.jfr
+POST {{baseUrl}}/api/jfr/stop
+
+### ---------- Actuator ----------
+
+GET {{baseUrl}}/actuator/metrics
+
+GET {{baseUrl}}/actuator/metrics/jvm.gc.pause

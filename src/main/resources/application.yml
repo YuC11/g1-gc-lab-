@@ -1,0 +1,42 @@
+server:
+  port: ${SERVER_PORT:8080}
+  address: 127.0.0.1
+  shutdown: graceful
+
+spring:
+  application:
+    name: g1-gc-lab
+  lifecycle:
+    timeout-per-shutdown-phase: 10s
+  mvc:
+    problemdetails:
+      enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,heapdump
+  endpoint:
+    health:
+      show-details: always
+
+demo:
+  max-retained-mb: 768
+  max-allocation-mb: 3072
+  max-threads: 8
+  max-duration-ms: 15000
+  # 场景墙钟预算：max-duration-ms 只约束请求参数；场景内部的分阶段等待由本值兜底
+  max-scenario-wall-ms: 90000
+  # 运行历史 / A/B 对比面板保留条数
+  history-size: 20
+  allow-full-gc: true
+  log-dir: ${GC_LOG_DIR:logs}
+  gc-log-pattern: "gc-*.log"
+  poll-interval-ms: 500
+  event-buffer-size: 500
+
+logging:
+  level:
+    root: INFO
+    com.example.gcdemo: INFO

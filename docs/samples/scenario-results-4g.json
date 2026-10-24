@@ -1,0 +1,102 @@
+[
+  {
+    "scenario": "young-gc",
+    "title": "Young GC：短命对象洪峰",
+    "elapsedMs": 66,
+    "allocatedMb": 512,
+    "retainedMb": 0,
+    "gcCountBefore": 8,
+    "gcCountAfter": 9,
+    "gcDelta": 1,
+    "observedEventTypes": [
+      "Young"
+    ],
+    "observations": [
+      "实际分配 512.0 MB",
+      "Young GC 次数增量 1"
+    ],
+    "hint": "查看日志中 Pause Young (Normal) 的 before->after 与 Eden regions 变化。",
+    "metrics": {
+      "chunkKb": 256,
+      "gcDelta": 1,
+      "totalMb": 512
+    },
+    "cancelled": false
+  },
+  {
+    "scenario": "humongous",
+    "title": "Humongous：大对象与 Region 碎片",
+    "elapsedMs": 41,
+    "allocatedMb": 416,
+    "retainedMb": 32,
+    "gcCountBefore": 9,
+    "gcCountAfter": 10,
+    "gcDelta": 1,
+    "observedEventTypes": [
+      "Young"
+    ],
+    "observations": [
+      "region 大小约 2 MB，H 阈值约 1.0 MB",
+      "分配 32 个 2 MB 大对象，保留 16 个",
+      "GC 次数增量 1"
+    ],
+    "hint": "查看日志中的 Humongous regions 与 Pause Cleanup；释放全部引用后运行 reset 观察 H region 回收。",
+    "metrics": {
+      "regionMb": 2,
+      "objectMb": 2,
+      "gcDelta": 1,
+      "count": 32
+    },
+    "cancelled": false
+  },
+  {
+    "scenario": "full-gc",
+    "title": "Full GC：显式 System.gc()",
+    "elapsedMs": 357,
+    "allocatedMb": 0,
+    "retainedMb": 32,
+    "gcCountBefore": 10,
+    "gcCountAfter": 11,
+    "gcDelta": 1,
+    "observedEventTypes": [
+      "Full"
+    ],
+    "observations": [
+      "System.gc() 已调用",
+      "Full 事件：true",
+      "Old collector 次数 0 -> 1",
+      "GC 次数增量 1"
+    ],
+    "hint": "Pause Full 说明 G1 退化为全堆压缩；生产环境应优先排查 allocation failure 根因，而不是频繁触发 Full GC。",
+    "metrics": {
+      "fullSeen": true,
+      "explicitGcDisabled": false,
+      "gcDelta": 1,
+      "explicitGcConcurrent": false
+    },
+    "cancelled": false
+  },
+  {
+    "scenario": "reset",
+    "title": "Reset：释放引用并复位",
+    "elapsedMs": 323,
+    "allocatedMb": 0,
+    "retainedMb": 0,
+    "gcCountBefore": 11,
+    "gcCountAfter": 12,
+    "gcDelta": 1,
+    "observedEventTypes": [
+      "Full"
+    ],
+    "observations": [
+      "retained 32.0 MB -> 0",
+      "显式 GC 已执行：true"
+    ],
+    "hint": "引用已经释放，但 Full GC 仍会压缩堆；观察日志中的 Pause Full 和堆回落。",
+    "metrics": {
+      "gcRan": true,
+      "retainedBeforeMb": 32
+    },
+    "cancelled": false
+  }
+]

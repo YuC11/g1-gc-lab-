@@ -1,0 +1,14 @@
+target/
+logs/
+.m2repo/
+.m2wrapper/
+.idea/
+*.iml
+.DS_Store
+*.hprof
+*.jfr
+*.class
+reports/
+
+# ZCode session artifacts
+.zcode/
